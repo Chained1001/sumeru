@@ -4,13 +4,15 @@
 // 调用方不再需要知道「读卡 → 拼索引行 → 追加索引 → 再校验」这个顺序：writeCard 一次做完。
 // 用法：node scripts/vault.mjs <子命令> [选项]，子命令与选项见 --help。
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, rmSync } from 'node:fs'
-import { join, dirname, relative, sep } from 'node:path'
+import { join, dirname, relative, sep, basename, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, FIELD_NAMES, BUCKETS, defaultPrivate } from './cardFormat.mjs'
 
 export { FIELDS, INDEX_COLUMNS, defaultPrivate, checkBasic }
 // 格式版本：1 是老库（卡上无「私有」行），2 起「私有」必填。升级见 upgradeVault。
 export const SCHEMA_VERSION = 2
+// 删卡的回收区（F-14）：卡按原相对路径移进来，restore 时原样移回。里面的东西不算活卡。
+export const TRASH_DIR = '已删卡片'
 
 // —— 身份证（VAULT.md）：格式版本＋一句话简介
 function readVaultMeta(root) {
@@ -163,7 +165,9 @@ export function checkVault(root) {
   const byPath = new Map(rows.map((r) => [r.相对路径, r]))
 
   for (const row of rows) {
-    if (!existsSync(join(root, row.相对路径))) issues.push(`索引行指向不存在的卡：${row.相对路径}`)
+    // 已删卡片/ 里的卡不是活卡：索引里还留着它的行，说明 delete 只搬了文件没清索引。
+    if (isTrashed(row.相对路径)) issues.push(`索引里仍有已删卡的行：${row.相对路径}，说明删卡没做干净，跑一次 index rebuild`)
+    else if (!existsSync(join(root, row.相对路径))) issues.push(`索引行指向不存在的卡：${row.相对路径}`)
   }
 
   for (const rel of listCards(root)) {
@@ -192,7 +196,7 @@ function listCards(root) {
   const walk = (dir, depth) => {
     if (depth > 2 || !existsSync(dir)) return
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === '已删卡片') continue
+      if (entry.name === TRASH_DIR) continue
       const full = join(dir, entry.name)
       if (entry.isDirectory()) walk(full, depth + 1)
       else if (/^卡-.+\.md$/.test(entry.name)) out.push(relative(root, full).split(sep).join('/'))
@@ -200,6 +204,228 @@ function listCards(root) {
   }
   walk(root, 0)
   return out
+}
+
+// —— 相对路径的把关：卡管理全部动作都按「库内的相对路径」定位，越界一律拒绝。
+// 理由与技术文档「写入库根之外的路径一律拒绝」一致：卡管理会移动与删除文件，
+// 路径越界在这里的代价是删掉库外的东西。
+function isTrashed(rel) {
+  return rel === TRASH_DIR || rel.startsWith(`${TRASH_DIR}/`)
+}
+
+function safeRelPath(rel) {
+  const text = String(rel ?? '').trim()
+  if (!text) return { ok: false, error: '缺路径：要操作的卡在库内的相对路径，形如 故事零件/人物设定/卡-<YYYYMMDD>-<短名>.md' }
+  if (isAbsolute(text) || /^[A-Za-z]:/.test(text)) return { ok: false, error: `路径只收库内相对路径，不收绝对路径：${text}` }
+  const parts = text.split(/[/\\]+/).filter((p) => p && p !== '.')
+  if (parts.includes('..')) return { ok: false, error: `路径不得含 ..（会写出库根之外）：${text}` }
+  if (parts.length < 2) return { ok: false, error: `路径须为 <桶>/<类型族>/<卡文件名>：${text}` }
+  return { ok: true, rel: parts.join('/') }
+}
+
+// 卡管理只认活卡的形状（与 listCards 同一口径）：文件名不是 卡-*.md 的一律拒绝。
+// 放宽的代价是 delete 能把任意文件搬进回收站，而它根本不在索引里，事后没人想得起来找。
+const CARD_FILE = /^卡-.+\.md$/
+
+function cardRel(rel) {
+  const checked = safeRelPath(rel)
+  if (!checked.ok) return checked
+  if (!CARD_FILE.test(checked.rel.split('/').at(-1))) {
+    return { ok: false, error: `「${checked.rel}」不像素材卡：卡文件名以「卡-」开头、以 .md 结尾` }
+  }
+  return checked
+}
+
+// —— 接口六：改卡上的一行（F-14 的「改」）。桶与类型族不走这里，走 cardMove。
+// 认三个节：基本信息（默认）、类型维度（--section 类型维度）、正文。
+// 字段不存在时不新建：拼错字段名若静默新增，卡上会多出一行谁也不知道的字段。
+const SECTION_BASIC = '基本信息'
+const SECTION_DIMENSION = '类型维度'
+const SECTION_BODY = '正文'
+const CARD_SECTIONS = [SECTION_BASIC, SECTION_DIMENSION, SECTION_BODY]
+// 这两行决定文件放在哪个目录，改了而不挪文件，文件位置与字段就不符（F-14 把挪类型单列一条）。
+const LOCATION_FIELDS = ['桶', '类型族']
+
+export function cardEdit(root, { path: relPath, field, value, section = SECTION_BASIC } = {}) {
+  const checked = cardRel(relPath)
+  if (!checked.ok) return { ok: false, issues: [checked.error] }
+  const rel = checked.rel
+  const sectionName = section || SECTION_BASIC
+  if (!CARD_SECTIONS.includes(sectionName)) {
+    return { ok: false, issues: [`--section 只认「${CARD_SECTIONS.join('」「')}」：${sectionName}`] }
+  }
+  const name = String(field ?? '').trim()
+  if (!name) return { ok: false, issues: ['缺 --field：要改哪一行，如 要点'] }
+  if (LOCATION_FIELDS.includes(name) && sectionName === SECTION_BASIC) {
+    return { ok: false, issues: [`「${name}」决定文件放在哪个目录，不走 card edit；改用 card move --bucket <桶> --family <类型族>`] }
+  }
+  if (value === undefined) return { ok: false, issues: ['缺 --value：这一行改成什么'] }
+
+  const file = join(root, rel)
+  if (!existsSync(file)) return { ok: false, issues: [`卡不存在：${rel}`] }
+
+  const card = readCard(file)
+  const bucketName = sectionName === SECTION_BASIC ? 'basic' : sectionName === SECTION_DIMENSION ? 'dimension' : 'body'
+  const target = card[bucketName] ?? {}
+  if (!(name in target)) {
+    return { ok: false, issues: [`卡的「${sectionName}」里没有「${name}」这一行，不新建：先确认字段名，或用 write 整卡重写`] }
+  }
+
+  // 走 writeCard 而不是自己渲染：校验、补默认值、落卡、修索引都在那一处，改卡不该另起一条写路径（D-02）。
+  const result = writeCard(root, { basic: bucketName === 'basic' ? { [name]: value } : {}, dimension: bucketName === 'dimension' ? { [name]: value } : {}, body: bucketName === 'body' ? { [name]: value } : {} }, rel)
+  if (!result.ok) return { ok: false, issues: result.issues }
+  return { ok: true, issues: [], relPath: rel, field: name, value }
+}
+
+// —— 接口七：删卡（F-14 的「删」）。卡连同相对路径移进 已删卡片/，索引行同步删掉。
+// 不真删文件：删错了还能 restore 回来（A-07 要的就是这条路）。
+export function cardDelete(root, { path: relPath } = {}) {
+  const checked = cardRel(relPath)
+  if (!checked.ok) return { ok: false, issues: [checked.error] }
+  const rel = checked.rel
+  if (isTrashed(rel)) return { ok: false, issues: [`这张卡已经在 ${TRASH_DIR}/ 里了：${rel}`] }
+  const file = join(root, rel)
+  if (!existsSync(file)) return { ok: false, issues: [`卡不存在：${rel}`] }
+
+  const target = join(root, TRASH_DIR, rel)
+  if (existsSync(target)) {
+    // 同一相对路径下已有回收件：多半是删过一张又建了同名卡，谁盖谁都是丢数据。
+    return { ok: false, issues: [`${TRASH_DIR}/ 里已有同路径的卡，不覆盖：${TRASH_DIR}/${rel}；先改名或手工处理那一张`] }
+  }
+  moveFile(file, target)
+  dropIndexRows(root, [rel])
+  return { ok: true, issues: [], relPath: rel, trashPath: `${TRASH_DIR}/${rel}` }
+}
+
+// —— 接口八：找回落进 已删卡片/ 的卡（F-14 / A-07）。
+// 原位置被人占了就拒绝：restore 的语义是「回到原处」，盖掉新卡是另一种操作。
+export function cardRestore(root, { path: relPath } = {}) {
+  const checked = cardRel(relPath)
+  if (!checked.ok) return { ok: false, issues: [checked.error] }
+  const incoming = checked.rel
+  const rel = isTrashed(incoming) ? incoming.slice(TRASH_DIR.length + 1) : incoming
+  const file = join(root, TRASH_DIR, rel)
+  if (!existsSync(file)) return { ok: false, issues: [`${TRASH_DIR}/ 里没有这张卡：${TRASH_DIR}/${rel}`] }
+
+  const target = join(root, rel)
+  if (existsSync(target)) return { ok: false, issues: [`原位置已被占用，不覆盖：${rel}。先处理占用它的那张卡，或改名后再 restore`] }
+
+  moveFile(file, target)
+  // 卡本身没改，索引行照卡重算即可；卡坏了则不补索引，交回问题由人修。
+  const indexed = indexCard(root, rel)
+  if (!indexed.ok) return { ok: false, issues: indexed.issues, relPath: rel }
+  return { ok: true, issues: [], relPath: rel }
+}
+
+// —— 接口九：合并两张卡（F-14 的「并进那张」）。
+// 被并入卡的两行内容并进目标卡：两边都有值时用「；」连，不丢任何一边。
+// 原卡按 delete 的方式进 已删卡片/，索引只剩目标卡一行。
+const MERGE_FIELDS = ['补充记录', '关联卡']
+
+export function cardMerge(root, { from, into } = {}) {
+  const fromChecked = cardRel(from)
+  if (!fromChecked.ok) return { ok: false, issues: [`--from ${fromChecked.error}`] }
+  const intoChecked = cardRel(into)
+  if (!intoChecked.ok) return { ok: false, issues: [`--into ${intoChecked.error}`] }
+  const fromRel = fromChecked.rel
+  const intoRel = intoChecked.rel
+  if (fromRel === intoRel) return { ok: false, issues: [`--from 与 --into 是同一张卡：${fromRel}`] }
+  if (isTrashed(fromRel) || isTrashed(intoRel)) return { ok: false, issues: [`合并的两张卡都必须是活卡，不认 ${TRASH_DIR}/ 里的：${isTrashed(fromRel) ? fromRel : intoRel}`] }
+  if (!existsSync(join(root, fromRel))) return { ok: false, issues: [`被并入的卡不存在：${fromRel}`] }
+  if (!existsSync(join(root, intoRel))) return { ok: false, issues: [`目标卡不存在：${intoRel}`] }
+  // 先查回收站占位再动目标卡：否则并了一半才发现放不进回收站，目标卡已经改了。
+  if (existsSync(join(root, TRASH_DIR, fromRel))) {
+    return { ok: false, issues: [`${TRASH_DIR}/ 里已有同路径的卡，不覆盖：${TRASH_DIR}/${fromRel}；先改名或手工处理那一张`] }
+  }
+
+  const source = readCard(join(root, fromRel))
+  const merged = {}
+  for (const key of MERGE_FIELDS) {
+    const a = (source.body?.[key] ?? '').trim()
+    const b = (readCard(join(root, intoRel)).body?.[key] ?? '').trim()
+    if (!a) continue
+    merged[key] = b ? (b.includes(a) ? b : `${b}；${a}`) : a
+  }
+  const written = Object.keys(merged).length
+    ? writeCard(root, { body: merged }, intoRel)
+    : { ok: true, issues: [] }
+  if (!written.ok) return { ok: false, issues: written.issues }
+
+  const trashed = cardDelete(root, { path: fromRel })
+  if (!trashed.ok) return { ok: false, issues: trashed.issues, relPath: intoRel }
+  return { ok: true, issues: [], relPath: intoRel, from: fromRel, mergedFields: Object.keys(merged) }
+}
+
+// —— 接口十：挪类型（F-14 的「挪」）。改「桶」「类型族」两行，文件移到新目录，文件名不变。
+// 新路径已存在时拒绝：挪过去盖掉另一张卡，等于一次删卡还没进回收站。
+export function cardMove(root, { path: relPath, bucket, family } = {}) {
+  const checked = cardRel(relPath)
+  if (!checked.ok) return { ok: false, issues: [checked.error] }
+  const rel = checked.rel
+  const nextBucket = String(bucket ?? '').trim()
+  const nextFamily = String(family ?? '').trim()
+  if (!nextBucket) return { ok: false, issues: ['缺 --bucket：挪到哪个桶（故事零件、写作方法、作品案例、现实避坑）'] }
+  if (!nextFamily) return { ok: false, issues: ['缺 --family：挪到哪个类型族，如 S-03 剧情桥段'] }
+  // 注册表只固定编号前缀，族名可生长（子类开放）；但「编号 名字」的段式是注册表的一贯写法，缺名字会与注册表行对不上。
+  const familyMatch = /^(S-\d{2})\s+(\S.*)$/.exec(nextFamily)
+  if (!familyMatch) {
+    return { ok: false, issues: [`--family 要写成注册表的段式「S-NN 族名」，如 S-03 剧情桥段：${nextFamily}`] }
+  }
+  // 目录名只取族名，不带编号：注册表的产卡路径是 素材库/<桶>/<族名>/，编号是卡上「类型族」那一行的前缀。
+  const familyDir = familyMatch[2].trim()
+  if (/[/\\]|\.\./.test(familyDir)) return { ok: false, issues: [`类型族名不能含路径分隔符或 ..：${nextFamily}`] }
+  if (isTrashed(rel)) return { ok: false, issues: [`${TRASH_DIR}/ 里的卡不参与挪类型：${rel}`] }
+  if (!BUCKETS.includes(nextBucket)) return { ok: false, issues: [`桶「${nextBucket}」不合法，只能是：${BUCKETS.join('、')}`] }
+
+  const file = join(root, rel)
+  if (!existsSync(file)) return { ok: false, issues: [`卡不存在：${rel}`] }
+
+  // 目录由「桶/族名」派生，与注册表「产卡入 素材库/<桶>/<类型族>/」同一口径。
+  const nextRel = `${nextBucket}/${familyDir}/${basename(rel)}`
+  if (nextRel === rel) {
+    // 同一个位置：只把两行对齐，不假装挪过；已经对得上就一个字节都不写。
+    const current = readCard(file).basic
+    if (current.桶 === nextBucket && current.类型族 === nextFamily) {
+      return { ok: true, issues: [], relPath: rel, unchanged: true }
+    }
+    const aligned = writeCard(root, { basic: { 桶: nextBucket, 类型族: nextFamily } }, rel)
+    if (!aligned.ok) return { ok: false, issues: aligned.issues }
+    return { ok: true, issues: [], relPath: rel, unchanged: true }
+  }
+  if (existsSync(join(root, nextRel))) return { ok: false, issues: [`新路径已存在，不覆盖：${nextRel}`] }
+  // 搬之前先按新两行校验一遍：卡本身坏了就不该动它的位置，否则库校验会多出一条说不清的错。
+  const before = readCard(file)
+  const nextBasic = { ...before.basic, 桶: nextBucket, 类型族: nextFamily }
+  const issues = checkBasic(nextBasic)
+  if (issues.length) return { ok: false, issues }
+
+  // 先搬文件再写两行：写卡走 writeCard，它按盘上内容合并，落盘位置就是新路径。
+  // 反过来先写后搬，一旦搬失败，卡上写着新桶而文件还在旧目录，最容易被误当成已挪好。
+  moveFile(file, join(root, nextRel))
+  const written = writeCard(root, { basic: { 桶: nextBucket, 类型族: nextFamily } }, nextRel)
+  if (!written.ok) return { ok: false, issues: written.issues, relPath: nextRel }
+  // 新行由 writeCard 的 upsert 写进索引，旧路径那一行得单独删掉，否则索引里留着断链行。
+  dropIndexRows(root, [rel])
+  return { ok: true, issues: [], relPath: nextRel, from: rel }
+}
+
+// —— 卡管理的两个文件动作：移动（跨目录）与清索引行。
+// 移动用 rename，跨盘（EXDEV）时退回「复制内容＋删原件」，两边都先建目录。
+function moveFile(from, to) {
+  mkdirSync(dirname(to), { recursive: true })
+  try {
+    renameSync(from, to)
+  } catch (error) {
+    if (error.code !== 'EXDEV') throw error
+    writeAtomic(to, readFileSync(from, 'utf8'))
+    rmSync(from, { force: true })
+  }
+}
+
+// 删索引行只删指定的，不重算全库：一张坏卡不该拦住一次删卡（与 rebuildIndex 的取舍一致）。
+function dropIndexRows(root, rels) {
+  const drop = new Set(rels)
+  writeIndex(root, readIndex(root).filter((r) => !drop.has(r.相对路径)))
 }
 
 // —— 接口三：重建索引（F-09 / F-14 的前置）。索引本是派生视图，删了也能重算出来。
@@ -337,19 +563,40 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   upgrade           把老库升到当前格式：补缺失字段，已删字段挪进「历史字段」
   index add         只把一张卡补进索引，不重扫全库
   write             按 JSON 写一张卡，顺带修好索引
+  card edit         改卡上的一行，索引同步（桶与类型族改用 card move）
+  card delete       把卡移进 已删卡片/，并存原相对路径，可从那里找回
+  card restore      把 已删卡片/ 里的卡移回原路径并补回索引；原位置被占则拒绝
+  card merge        把 --from 的补充记录与关联卡并进 --into，原卡进 已删卡片/
+  card move         改桶与类型族两行并移到新目录；新路径已存在则拒绝
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
   --intro <一行>    init 时写进身份证的简介
   --card <路径>     write 的卡内容 JSON 文件，- 表示从标准输入读
-  --path <相对路径> index add 要补进索引的卡
+  --path <相对路径> index add 要补进索引的卡；card 动作要操作的卡
+  --field <字段名>  card edit 要改的行名，如 要点
+  --value <新值>    card edit 改成什么
+  --section <节名>  card edit 改哪一节：基本信息（默认）、类型维度、正文
+  --from <相对路径> card merge 被并入的卡
+  --into <相对路径> card merge 的目标卡
+  --bucket <桶>     card move 挪到哪个桶
+  --family <类型族> card move 挪到哪个类型族
   --dry-run         index rebuild 与 upgrade 只报清单，不落盘
   --json            输出单个 JSON 对象
   --help, -h        显示本说明`
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
-const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade'])
+const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card'])
+// 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
+// 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
+export const CARD_ACTION_FLAGS = {
+  edit: [['path', '--path <卡的相对路径>'], ['field', '--field <字段名>'], ['value', '--value <新值>']],
+  delete: [['path', '--path <卡的相对路径>']],
+  restore: [['path', '--path <卡的相对路径>']],
+  merge: [['from', '--from <被并入的卡>'], ['into', '--into <目标卡>']],
+  move: [['path', '--path <卡的相对路径>'], ['bucket', '--bucket <桶>'], ['family', '--family <类型族>']],
+}
 
 export function parseCliArgs(argv) {
   const options = { cmd: '', action: '', json: false, help: false, dryRun: false }
@@ -398,6 +645,24 @@ export function runCli(argv, io = {}) {
   if (!KNOWN_COMMANDS.has(options.cmd)) {
     err(`未知子命令 ${options.cmd}。\n${USAGE}`)
     return 2
+  }
+
+  // card 的动作名与必填参数也在碰库之前验完：没给库的机器上，
+  // 「card 缺 --path」该报参数错误（2），不该先报「未找到库」（1）。
+  if (options.cmd === 'card') {
+    const required = CARD_ACTION_FLAGS[options.action]
+    if (!required) {
+      const message = `card 需要动作：${Object.keys(CARD_ACTION_FLAGS).join('、')}。\n${USAGE}`
+      emit({ ok: false, error: message, data: { action: options.action } }, message)
+      return 2
+    }
+    // --value 允许空串（清空可选字段如「出处链接」），其余参数空串与缺省同罚。
+    const missing = required.filter(([key]) => options[key] === undefined || (key !== 'value' && options[key] === ''))
+    if (missing.length) {
+      const message = `card ${options.action} 需要 ${missing.map(([, flag]) => flag).join('、')}。\n${USAGE}`
+      emit({ ok: false, error: message, data: { action: options.action } }, message)
+      return 2
+    }
   }
 
   const resolved = detectVault({ vault: options.vault, cwd })
@@ -517,6 +782,34 @@ export function runCli(argv, io = {}) {
       return 1
     }
     emit({ ok: true, errors: [], data: { relPath: result.relPath } }, `已写入：${result.relPath}`)
+    return 0
+  }
+
+  if (options.cmd === 'card') {
+    const action = options.action
+    const run = {
+      edit: () => cardEdit(root, { path: options.path, field: options.field, value: options.value, section: options.section }),
+      delete: () => cardDelete(root, { path: options.path }),
+      restore: () => cardRestore(root, { path: options.path }),
+      merge: () => cardMerge(root, { from: options.from, into: options.into }),
+      move: () => cardMove(root, { path: options.path, bucket: options.bucket, family: options.family }),
+    }[action]
+    const result = run()
+    if (!result.ok) {
+      emit({ ok: false, errors: result.issues.map((m) => ({ message: m })), data: { action, ...(result.relPath ? { relPath: result.relPath } : {}) } }, `card ${action} 未完成：\n${result.issues.map((i) => `- ${i}`).join('\n')}`)
+      return 1
+    }
+    const data = { action, ...result }
+    delete data.ok
+    delete data.issues
+    const text = {
+      edit: `已改 ${result.relPath} 的「${result.field}」：${result.value}`,
+      delete: `已删 ${result.relPath}，移进 ${result.trashPath}（可用 card restore 找回）`,
+      restore: `已找回 ${result.relPath}`,
+      merge: `已把 ${result.from} 并进 ${result.relPath}${result.mergedFields?.length ? `（并入 ${result.mergedFields.join('、')}）` : '（被并入卡没有补充记录与关联卡，只收原卡）'}`,
+      move: result.unchanged ? `桶与类型族已是目标值，文件未移动：${result.relPath}` : `已挪到 ${result.relPath}（原 ${result.from}）`,
+    }[action]
+    emit({ ok: true, errors: [], data }, text)
     return 0
   }
 

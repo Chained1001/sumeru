@@ -3,7 +3,7 @@
 // 因此这些用例在禁止子进程管道的沙箱里照样跑（那条 spawn 探测只剩一条端到端用例需要）。
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -345,6 +345,322 @@ test('当前格式的新库跑 upgrade 是空操作', () => {
   assert.equal(r.code, 0)
   assert.equal(readFileSync(join(lib, CARD.relPath), 'utf8'), before)
 })
+// —— 批四：卡管理（F-14、A-07、A-12）。五个动作都走 runCli，不起子进程。
+// 判据里反复出现「每步后 check 退出码 0」：索引是派生视图，改卡、删卡、挪类型若只动了文件没动索引，
+// 下一步检索就会拿到断链的行，这种漂移只能靠 check 抓。
+
+// 造一个带两张卡的库：甲在人物设定，乙在剧情桥段，两者都带补充记录与关联卡（merge 要两边都有值）。
+function makeCardLib() {
+  const lib = tmp()
+  run(['init', '--vault', lib])
+  const a = { ...CARD, body: { ...CARD.body, 补充记录: '2026-10-20 补了原型', 关联卡: '卡-丙' } }
+  const b = {
+    relPath: '故事零件/剧情桥段/卡-20261023-乙.md',
+    basic: { ...CARD.basic, 卡名: '乙', 类型族: 'S-03 剧情桥段', 要点: '开局先给一个反常动作' },
+    dimension: { 冲突结构: '反常动作钩子' },
+    body: { 内容: '乙的底盘', 补充记录: '2026-10-21 补了变体', 关联卡: '卡-丁' },
+  }
+  assert.equal(writeCardViaCli(lib, a).code, 0)
+  assert.equal(writeCardViaCli(lib, b).code, 0)
+  assert.equal(run(['check', '--vault', lib]).code, 0, '夹具本身应是干净的库')
+  return { lib, a, b }
+}
+
+const cardText = (lib, rel) => readFileSync(join(lib, rel), 'utf8')
+const indexRows = (lib) => readFileSync(join(lib, 'INDEX.md'), 'utf8').split('\n').filter((l) => /^\| (?!卡名)/.test(l) && l.startsWith('|'))
+const TRASH = '已删卡片'
+
+test('card edit 改要点：卡与索引一起改，check 退出码 0', () => {
+  const { lib } = makeCardLib()
+  const r = run(['card', 'edit', '--vault', lib, '--path', CARD.relPath, '--field', '要点', '--value', '改过的要点'])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  assert.match(cardText(lib, CARD.relPath), /^- 要点：改过的要点$/m)
+  assert.match(readFileSync(join(lib, 'INDEX.md'), 'utf8'), /改过的要点/, '索引没跟着卡改')
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('card edit 可改类型维度节的字段，也可清空可选字段', () => {
+  const { lib } = makeCardLib()
+  const dim = run(['card', 'edit', '--vault', lib, '--path', CARD.relPath, '--field', '性格核', '--value', '表里反差', '--section', '类型维度'])
+  assert.equal(dim.code, 0, dim.stdout)
+  assert.match(cardText(lib, CARD.relPath), /^- 性格核：表里反差$/m)
+
+  const empty = run(['card', 'edit', '--vault', lib, '--path', CARD.relPath, '--field', '出处链接', '--value', ''])
+  assert.equal(empty.code, 0, '清空可选字段是合法改法，不该被当成缺 --value')
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('card edit 拒绝改桶与类型族：那两行决定了文件位置，须走 card move', () => {
+  const { lib } = makeCardLib()
+  const r = run(['card', 'edit', '--vault', lib, '--path', CARD.relPath, '--field', '桶', '--value', '写作方法'])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /card move/)
+  assert.match(cardText(lib, CARD.relPath), /^- 桶：故事零件$/m, '被拒绝时不得改动卡')
+})
+
+test('card edit 不新建卡上没有的字段，check 仍为 0', () => {
+  const { lib } = makeCardLib()
+  const r = run(['card', 'edit', '--vault', lib, '--path', CARD.relPath, '--field', '不存在的字段', '--value', 'x'])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /不新建/)
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('card delete 把卡移进 已删卡片/ 并保留原相对路径；check 不因它报错', () => {
+  const { lib } = makeCardLib()
+  const r = run(['card', 'delete', '--vault', lib, '--path', CARD.relPath])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  assert.equal(existsSync(join(lib, CARD.relPath)), false, '原位置应已空出')
+  assert.ok(existsSync(join(lib, TRASH, CARD.relPath)), `已删卡片/ 里应保留原相对路径：${TRASH}/${CARD.relPath}`)
+  assert.ok(!readFileSync(join(lib, 'INDEX.md'), 'utf8').includes(CARD.relPath), '索引行应已删除')
+  assert.equal(run(['check', '--vault', lib]).code, 0, '回收站里的卡不算活卡，check 不该报「卡未进索引」')
+  assert.equal(indexRows(lib).length, 1, '索引行数应等于活卡数')
+})
+
+test('A-07：删掉的卡能用 restore 找回到原路径，索引行一并补回', () => {
+  const { lib } = makeCardLib()
+  const rel = CARD.relPath
+  const before = cardText(lib, rel)
+  assert.equal(run(['card', 'delete', '--vault', lib, '--path', rel]).code, 0)
+
+  const r = run(['card', 'restore', '--vault', lib, '--path', rel])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  assert.ok(existsSync(join(lib, rel)), 'restore 应放回原路径')
+  assert.equal(cardText(lib, rel), before, 'restore 不该改卡的内容')
+  assert.ok(!existsSync(join(lib, TRASH, rel)), '回收站里的那份应已移走')
+  assert.match(readFileSync(join(lib, 'INDEX.md'), 'utf8'), new RegExp(rel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), '索引行应补回')
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+  assert.equal(indexRows(lib).length, 2, '索引行数与卡数相等（A-07 判据）')
+})
+
+test('restore 遇到原位置已占用时退出码 1，且不覆盖那张卡', () => {
+  const { lib, a } = makeCardLib()
+  assert.equal(run(['card', 'delete', '--vault', lib, '--path', a.relPath]).code, 0)
+  // 删完再在同名位置建一张同路径的新卡，模拟「删了又建同名卡」。
+  assert.equal(writeCardViaCli(lib, { ...a, basic: { ...a.basic, 卡名: '新甲', 要点: '新卡的要点' } }).code, 0)
+
+  const r = run(['card', 'restore', '--vault', lib, '--path', a.relPath])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /已被占用/)
+  assert.match(cardText(lib, a.relPath), /^- 卡名：新甲$/m, '占用位置的那张卡被覆盖了')
+  assert.ok(existsSync(join(lib, TRASH, a.relPath)), 'restore 失败时回收站里的卡应原样留着')
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('card restore 对不在回收站的路径退出码 1，不凭空造卡', () => {
+  const { lib } = makeCardLib()
+  const r = run(['card', 'restore', '--vault', lib, '--path', '故事零件/人物设定/卡-20261023-无.md'])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /已删卡片/)
+  assert.equal(existsSync(join(lib, '故事零件/人物设定/卡-20261023-无.md')), false)
+})
+
+test('card merge：两边的补充记录与关联卡都留下，被并入卡进 已删卡片/', () => {
+  const { lib, a, b } = makeCardLib()
+  const r = run(['card', 'merge', '--vault', lib, '--from', b.relPath, '--into', a.relPath])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+
+  const text = cardText(lib, a.relPath)
+  assert.match(text, /补充记录：2026-10-20 补了原型；2026-10-21 补了变体/, '两边的补充记录应都在，用「；」连接')
+  assert.match(text, /关联卡：卡-丙；卡-丁/, '两边的关联卡应都在，不丢任何一边')
+  assert.ok(!existsSync(join(lib, b.relPath)), '被并入卡应离开原位置')
+  assert.ok(existsSync(join(lib, TRASH, b.relPath)), '被并入卡应进 已删卡片/')
+  assert.ok(!readFileSync(join(lib, 'INDEX.md'), 'utf8').includes(b.relPath), '索引里不该再有被并入卡的行')
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+  assert.equal(indexRows(lib).length, 1, '合并后索引行数与活卡数相等')
+})
+
+test('card merge 在只有一边有值时直接搬过去，不留下孤零零的分号', () => {
+  const { lib, a, b } = makeCardLib()
+  // 把被并入卡的补充记录清空，只剩关联卡有值。
+  assert.equal(run(['card', 'edit', '--vault', lib, '--path', b.relPath, '--field', '补充记录', '--value', '', '--section', '正文']).code, 0)
+  assert.equal(run(['card', 'merge', '--vault', lib, '--from', b.relPath, '--into', a.relPath]).code, 0)
+  const text = cardText(lib, a.relPath)
+  assert.match(text, /^- 补充记录：2026-10-20 补了原型$/m, '目标卡原有的值应原样保留，不该被空值拼上分号')
+  assert.match(text, /^- 关联卡：卡-丙；卡-丁$/m)
+})
+
+test('card merge 指向同一张卡或指向回收站里的卡时退出码 1', () => {
+  const { lib, a, b } = makeCardLib()
+  assert.equal(run(['card', 'merge', '--vault', lib, '--from', a.relPath, '--into', a.relPath]).code, 1)
+
+  assert.equal(run(['card', 'delete', '--vault', lib, '--path', b.relPath]).code, 0)
+  const r = run(['card', 'merge', '--vault', lib, '--from', b.relPath, '--into', a.relPath])
+  assert.equal(r.code, 1, '已删卡不参与合并')
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('card move：桶与类型族两行与目录一起改，文件名不变', () => {
+  const { lib } = makeCardLib()
+  const next = '故事零件/剧情桥段/卡-20261023-甲.md'
+  const r = run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '故事零件', '--family', 'S-03 剧情桥段'])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+
+  assert.ok(existsSync(join(lib, next)), '文件应在新目录')
+  assert.equal(existsSync(join(lib, CARD.relPath)), false, '旧位置应空出')
+  const text = cardText(lib, next)
+  assert.match(text, /^- 桶：故事零件$/m)
+  assert.match(text, /^- 类型族：S-03 剧情桥段$/m)
+  // 目录取族名不带编号：注册表的产卡路径是 素材库/<桶>/<族名>/。
+  assert.equal(dirname(next).split('/')[1], '剧情桥段')
+  const index = readFileSync(join(lib, 'INDEX.md'), 'utf8')
+  assert.ok(!index.includes(CARD.relPath), '索引里不该留旧路径的行')
+  assert.match(index, /S-03 剧情桥段/, '索引行应跟上新的类型族')
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('card move 新路径已存在时退出码 1，不覆盖也不动卡', () => {
+  const { lib } = makeCardLib()
+  // 甲的第一次挪类型占住 剧情桥段/卡-20261023-甲.md，再写一张同名卡回人物设定，就撞上了。
+  const moved = '故事零件/剧情桥段/卡-20261023-甲.md'
+  assert.equal(run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '故事零件', '--family', 'S-03 剧情桥段']).code, 0)
+  assert.equal(writeCardViaCli(lib, { ...CARD, basic: { ...CARD.basic, 要点: '第二张甲' } }).code, 0)
+
+  const r = run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '故事零件', '--family', 'S-03 剧情桥段'])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /已存在/)
+  assert.match(cardText(lib, CARD.relPath), /^- 要点：第二张甲$/m, '被拒绝时旧位置的卡不得改动')
+  assert.match(cardText(lib, moved), /^- 要点：表层傻乐里层认死理$/m, '已在新位置的卡不得被覆盖')
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('card move 换桶：跨桶时目录与「桶」行一起改', () => {
+  const { lib } = makeCardLib()
+  const next = '写作方法/写作技巧/卡-20261023-甲.md'
+  const r = run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '写作方法', '--family', 'S-07 写作技巧'])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  assert.ok(existsSync(join(lib, next)))
+  assert.match(cardText(lib, next), /^- 桶：写作方法$/m)
+  assert.match(cardText(lib, next), /^- 类型族：S-07 写作技巧$/m)
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('card move 拒绝不合法的桶与非注册表段式的类型族', () => {
+  const { lib } = makeCardLib()
+  assert.equal(run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '杂项', '--family', 'S-03 剧情桥段']).code, 1)
+  assert.equal(run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '故事零件', '--family', '剧情桥段']).code, 1)
+  assert.equal(run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '故事零件', '--family', 'S-03 剧情桥段']).code, 0, '同位置且字段已对得上时应视作未移动，退出码 0')
+})
+
+test('A-12：连续做「挪类型 → 改要点 → 删卡」，每步后 check 均为 0，全程不手改 INDEX.md', () => {
+  // 判据里那句「全程没有手改 INDEX.md」，落到测试上就是：除了 CLI，没人写这个文件。
+  // 因此这里只断言 CLI 的结果，索引的每个中间态都由 check 逐列对账兜住。
+  const { lib } = makeCardLib()
+  const indexSnapshots = [readFileSync(join(lib, 'INDEX.md'), 'utf8')]
+
+  const next = '故事零件/剧情桥段/卡-20261023-甲.md'
+  for (const argv of [
+    ['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '故事零件', '--family', 'S-03 剧情桥段'],
+    ['card', 'edit', '--vault', lib, '--path', next, '--field', '要点', '--value', '挪过之后再改的要点'],
+    ['card', 'delete', '--vault', lib, '--path', next],
+  ]) {
+    const step = run(argv)
+    assert.equal(step.code, 0, `${argv.slice(0, 2).join(' ')} 失败：${step.stdout}${step.stderr}`)
+    assert.equal(run(['check', '--vault', lib]).code, 0, `${argv.slice(0, 2).join(' ')} 之后 check 未通过`)
+    assert.equal(indexRows(lib).length, listCardCount(lib), `${argv.slice(0, 2).join(' ')} 之后索引行数与卡数不等`)
+    indexSnapshots.push(readFileSync(join(lib, 'INDEX.md'), 'utf8'))
+  }
+  assert.match(indexSnapshots[1], /剧情桥段/, '挪类型后索引应指向新类型族')
+  assert.match(indexSnapshots[2], /挪过之后再改的要点/, '改要点后索引应跟着改')
+  assert.ok(!indexSnapshots[3].includes('卡-20261023-甲'), '删卡后索引不该再有这一行')
+})
+
+// 活卡数：桶目录下以「卡-」开头的 .md，不含 已删卡片/。与 vault.mjs 的 listCards 同一口径。
+function listCardCount(lib) {
+  let n = 0
+  const walk = (dir, depth) => {
+    if (depth > 2 || !existsSync(dir)) return
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === TRASH) continue
+      if (entry.isDirectory()) walk(join(dir, entry.name), depth + 1)
+      else if (/^卡-.+\.md$/.test(entry.name)) n++
+    }
+  }
+  walk(lib, 0)
+  return n
+}
+
+test('card 系列：参数缺失退出码 2，目标卡不存在退出码 1', () => {
+  const { lib } = makeCardLib()
+  const missing = [
+    ['card'],
+    ['card', 'edit', '--vault', lib, '--path', CARD.relPath],
+    ['card', 'edit', '--vault', lib, '--path', CARD.relPath, '--field', '要点'],
+    ['card', 'delete', '--vault', lib],
+    ['card', 'restore', '--vault', lib],
+    ['card', 'merge', '--vault', lib, '--from', CARD.relPath],
+    ['card', 'merge', '--vault', lib, '--into', CARD.relPath],
+    ['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '故事零件'],
+    ['card', 'move', '--vault', lib, '--path', CARD.relPath, '--family', 'S-03 剧情桥段'],
+    ['card', '没这个动作', '--vault', lib],
+  ]
+  for (const argv of missing) assert.equal(run(argv).code, 2, `参数不全时应退出码 2：${argv.join(' ')}`)
+  assert.equal(run(['card', 'edit', '--vault', lib, '--json']).code, 2, '--json 在参数错误时也是 2')
+
+  const absent = '故事零件/人物设定/卡-20261023-无.md'
+  for (const argv of [
+    ['card', 'edit', '--vault', lib, '--path', absent, '--field', '要点', '--value', 'x'],
+    ['card', 'delete', '--vault', lib, '--path', absent],
+    ['card', 'restore', '--vault', lib, '--path', absent],
+    ['card', 'move', '--vault', lib, '--path', absent, '--bucket', '故事零件', '--family', 'S-03 剧情桥段'],
+  ]) {
+    assert.equal(run(argv).code, 1, `目标卡不存在时应退出码 1：${argv.join(' ')}`)
+  }
+  assert.equal(run(['card', 'merge', '--vault', lib, '--from', absent, '--into', CARD.relPath]).code, 1)
+})
+
+test('card 系列拒绝库外路径与不像卡的文件名，退出码 1', () => {
+  const { lib } = makeCardLib()
+  for (const bad of ['../卡-20261023-甲.md', join(lib, CARD.relPath), '故事零件/人物设定/随便.md']) {
+    assert.equal(run(['card', 'delete', '--vault', lib, '--path', bad]).code, 1, `越界或非卡的路径应拒绝：${bad}`)
+  }
+  assert.ok(existsSync(join(lib, CARD.relPath)), '被拒绝的路径不该动到任何卡')
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('check 抓得出「索引里还留着已删卡的行」', () => {
+  // delete 只搬文件没清索引，就是这个样子：文件不在活卡区，索引却还指着一个回收站路径。
+  const { lib } = makeCardLib()
+  assert.equal(run(['card', 'delete', '--vault', lib, '--path', CARD.relPath]).code, 0)
+  writeFileSync(
+    join(lib, 'INDEX.md'),
+    readFileSync(join(lib, 'INDEX.md'), 'utf8') + `| 甲 | 故事零件 | S-02 人物设定 | 原型基底 | x | 长期 | ${TRASH}/${CARD.relPath} |\n`,
+    'utf8',
+  )
+  const r = run(['check', '--vault', lib])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /已删卡/)
+  // index rebuild 是修法：重建后这条幽灵行消失，check 回到 0。
+  assert.equal(run(['index', 'rebuild', '--vault', lib]).code, 0)
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('card --json 输出同一形状：成功与业务失败都带 ok、data、errors', () => {
+  const { lib } = makeCardLib()
+  const ok = run(['card', 'edit', '--vault', lib, '--path', CARD.relPath, '--field', '要点', '--value', 'json 改的', '--json'])
+  assert.equal(ok.code, 0)
+  const okPayload = JSON.parse(ok.stdout)
+  assert.equal(okPayload.ok, true)
+  assert.deepEqual(okPayload.errors, [])
+  assert.equal(okPayload.data.action, 'edit')
+  assert.equal(okPayload.data.relPath, CARD.relPath)
+
+  const bad = run(['card', 'delete', '--vault', lib, '--path', '故事零件/人物设定/卡-20261023-无.md', '--json'])
+  assert.equal(bad.code, 1)
+  const badPayload = JSON.parse(bad.stdout)
+  assert.equal(badPayload.ok, false)
+  assert.ok(badPayload.errors.length)
+  assert.deepEqual(badPayload.data, { action: 'delete' })
+})
+
+test('--help 列出五个 card 动作与它们的选项', () => {
+  const r = run(['--help'])
+  assert.equal(r.code, 0)
+  for (const word of ['card edit', 'card delete', 'card restore', 'card merge', 'card move', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family']) {
+    assert.ok(r.stdout.includes(word), `--help 缺「${word}」`)
+  }
+})
+
 test('没有一个子命令会调 process.exit：脚本作为模块被 import 时不杀宿主', () => {
   // process.exit 会在 import 时直接终止调用方进程，测试里无法捕获，只能静态查源码。
   const source = readFileSync(join(base, 'skills', 'material-vault', 'scripts', 'vault.mjs'), 'utf8')
