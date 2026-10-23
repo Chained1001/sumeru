@@ -32,9 +32,9 @@ test('必填字段是字段表的子集，且每个字段都显式声明了必�
   assert.ok(REQUIRED_FIELDS.every((n) => FIELD_NAMES.includes(n)));
 })
 
-test('可选字段只有出处链接与私有：其余漏了都该报错', () => {
+test('可选字段只剩出处链接：私有已随格式版本 2 转必填', () => {
   const optional = FIELD_NAMES.filter((n) => !REQUIRED_FIELDS.includes(n))
-  assert.deepEqual(optional, ['出处链接', '私有'])
+  assert.deepEqual(optional, ['出处链接'])
 })
 
 test('私有默认值：S-01 为是，其余为否', () => {
@@ -66,7 +66,7 @@ test('indexRow 把卡的字段映射成索引行，时效取自时效状态', ()
 })
 
 test('checkBasic 抓得出缺必填、要点超限、非法枚举', () => {
-  const good = { 卡名: '甲', 桶: '故事零件', 类型族: 'S-02', 子类: '原型基底', 来源: '口述', 来源等级: '单源', 采集日期: '2026-10-23', 时效状态: '长期', 要点: '乙' }
+  const good = { 卡名: '甲', 桶: '故事零件', 类型族: 'S-02', 子类: '原型基底', 来源: '口述', 来源等级: '单源', 采集日期: '2026-10-23', 时效状态: '长期', 私有: '否', 要点: '乙' }
   assert.deepEqual(checkBasic(good), [], '合法卡不应报错（出处链接与私有可缺）')
 
   const issues = checkBasic({ ...good, 要点: '这'.repeat(41), 时效状态: '新鲜', 来源等级: '可靠', 私有: '大概' })
@@ -77,7 +77,7 @@ test('checkBasic 抓得出缺必填、要点超限、非法枚举', () => {
 })
 
 test('要点限长按字符计，非按 UTF-16 码元', () => {
-  const good = { 卡名: '甲', 桶: '故事零件', 类型族: 'S-02', 子类: 'x', 来源: 'y', 来源等级: '单源', 采集日期: '2026-10-23', 时效状态: '长期' }
+  const good = { 卡名: '甲', 桶: '故事零件', 类型族: 'S-02', 子类: 'x', 来源: 'y', 来源等级: '单源', 采集日期: '2026-10-23', 时效状态: '长期', 私有: '否' }
   assert.deepEqual(checkBasic({ ...good, 要点: '𝄞'.repeat(40) }), [], '40 个星形字符应恰好通过')
   assert.ok(checkBasic({ ...good, 要点: '𝄞'.repeat(41) }).some((i) => i.includes('超 40')))
 })
