@@ -39,7 +39,7 @@
 
 ## 术语
 
-- 术语首次出现时在 `GLOSSARY.md` 登记。
+- 术语首次出现时在 `GLOSSARY.md` 登记；项目根还没有 `GLOSSARY.md` 时，先从 `templates/root/GLOSSARY.md` 建一份再登记。
 - 术语定义不超过 60 字。
 - `GLOSSARY.md` 按拼音排序，每条一行，格式为 `- **术语**：定义`。
 

@@ -188,6 +188,26 @@ test('--all 一次生成全部五类骨架', async () => {
   })
 })
 
+// 用例文件不在 skills/<name>/ 下，只看技能目录是否存在挡不住它：不加 --force 而同名用例
+// 已存在时，手写的断言会被模板静默盖掉，且命令退出码 0。
+test('--eval 遇到同名用例时不覆盖：报错退出，手写内容原样保留，--force 才覆盖', async () => {
+  await withSandbox(async (root) => {
+    const file = join(root, 'evals', 'cases', 'handwritten.md')
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, '# 手写用例\n\nC-99 必须保留\n', 'utf8')
+
+    await assert.rejects(
+      () => initSkill({ root, name: 'handwritten', description: '当需要用例时使用。', withEval: true }),
+      (error) => error.message.includes('evals') && error.message.includes('--force'),
+      '同名用例已存在时应拒绝并提示 --force',
+    )
+    assert.match(await readFile(file, 'utf8'), /C-99 必须保留/, '手写用例不得被静默覆盖')
+
+    await initSkill({ root, name: 'handwritten', description: '当需要用例时使用。', withEval: true, force: true })
+    assert.match(await readFile(file, 'utf8'), /^# handwritten 冒烟$/m, '--force 才允许覆盖')
+  })
+})
+
 after(async () => {
   await rm(join(here, '.tmp', 'init-skill'), { recursive: true, force: true })
   try {
