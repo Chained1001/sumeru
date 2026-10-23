@@ -67,6 +67,20 @@
 
 提交信息按 `docs/规范/04-提交与分支.md`。
 
+## Agent skills
+
+### Issue tracker
+
+工程票存在 GitHub Issues（`Chained1001/sumeru`），用 `gh` CLI 读写；需求正文仍以 `docs/产品/PRD.md` 为准，票里只引编号。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+沿用五个标准分诊标签：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文：根目录一份 `GLOSSARY.md` 管术语，架构决策在 `docs/技术/技术文档.md` 的 `D-xx` 表（本仓库没有 `docs/adr/`）。见 `docs/agents/domain.md`。
+
 ## 禁止事项
 
 - 禁止把素材原文整段拷进本仓库，改为素材卡只存要点、摘录与出处指针（原因：原文归 `辅助内容/`，入库拷贝会形成双源漂移，改一处漏一处）。
