@@ -116,6 +116,29 @@ test('README 与 AGENTS 的族数口径＝注册表族数', () => {
   }
 })
 
+test('判据编号从 J-01 起连续，无跳号', () => {
+  // 跳号意味着中间那条被删了，而引用它的流程文件不会报错，只会静默指向一个不存在的判据。
+  const ids = [...judgeText.matchAll(/^\| (J-\d{2}) \|/gm)].map((m) => m[1])
+  assert.ok(ids.length > 0, '判据表为空')
+  ids.forEach((id, i) => assert.equal(id, 'J-' + String(i + 1).padStart(2, '0'), '判据编号须从 J-01 起连续，第 ' + (i + 1) + ' 条是 ' + id))
+})
+
+test('判据引用的 E-xx 都在依据区有定义', () => {
+  // J-13 曾引用 E-06 而依据区只有到 E-04：文档照读不报错，查证时才卡住。
+  const defined = new Set([...judgeText.matchAll(/^- (E-\d{2})：/gm)].map((m) => m[1]))
+  const cited = new Set([...judgeText.matchAll(/\| (E-\d{2}) \|/gm)].map((m) => m[1]))
+  for (const id of cited) assert.ok(defined.has(id), '判据引用了 ' + id + '，依据区没有定义')
+})
+
+test('摘录与对话类素材的公开尺度写进了判据与版式', () => {
+  // Q-01 的决断：摘录上限 120 字、对话类不留可辨认原话。两处都要有，缺一处采集员就读不到。
+  assert.match(judgeText, /J-14[^\n]*不超过 120 字/, '判据缺 J-14（摘录上限）')
+  assert.match(judgeText, /J-15[^\n]*可辨认/, '判据缺 J-15（对话类不留原话）')
+  const 版式 = read('skills/material-vault/assets/素材卡版式.md')
+  assert.match(版式, /120 字/, '版式没标摘录上限，采集员按版式产卡时读不到')
+  assert.match(版式, /J-1[45]/, '版式没指向 J-14／J-15')
+})
+
 test('来源等级定义只住判据一处', () => {
   assert.ok(/来源等级取值口径/.test(judgeText), '判据缺来源等级口径行（唯一定义处）')
   assert.ok(!/＝关键事实双源一致/.test(tierText), '权威源分级又自己定义了一遍来源等级——改为指向 J-09')
