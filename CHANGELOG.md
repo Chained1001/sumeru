@@ -14,7 +14,9 @@
 
 ### Changed
 
-- `vault.mjs` 改成子命令：`detect`（三层定位）、`init`（一次写齐身份证、索引表头与四个桶目录）、`check`、`write`（读卡 JSON，落卡并同步修索引）；全局选项 `--vault`、`--json`、`--help`
+- `vault.mjs` 改成子命令：`detect`（三层定位）、`init`（一次写齐身份证、索引表头与四个桶目录）、`check`、`write`（读卡 JSON，落卡并同步修索引）、`index rebuild`（从卡重算全索引，坏卡跳过并单独报，带 `--dry-run`）、`index add`（只补一张卡）；全局选项 `--vault`、`--card`、`--path`、`--json`、`--dry-run`、`--help`
+- `check` 改为把索引当派生视图逐列对账：卡改了要点而索引没跟这类漂移，此前只查「在不在」是抓不到的
+- 两条写索引的路径（`writeCard` 的 upsert 与 `rebuildIndex`）共用同一套按相对路径排序，产出逐字相同，`rebuild` 因此可反复跑
 - `vault.mjs` 的 `runCli` 接可注入 io 并返回退出码，不再调 `process.exit`；`test/vault-cli.test.mjs` 十四条直接穿这个接口，在禁止子进程管道的环境里也能跑（此前这类用例只能整组跳过）
 - 退出码统一为 0 成功、1 业务失败、2 参数错误、3 环境缺失；`--json` 在参数错误时也输出同一形状的对象
 - 子命令名在触碰库状态之前校验：此前未知子命令会先撞上「未找到库」，把参数错误报成业务失败

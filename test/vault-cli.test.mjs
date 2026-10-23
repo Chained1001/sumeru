@@ -3,7 +3,7 @@
 // 因此这些用例在禁止子进程管道的沙箱里照样跑（那条 spawn 探测只剩一条端到端用例需要）。
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +24,14 @@ function run(argv, cwd = process.cwd()) {
   const err = []
   const code = runCli(argv, { out: (s) => out.push(s), err: (s) => err.push(s), cwd })
   return { code, stdout: out.join('\n'), stderr: err.join('\n') }
+}
+
+// 把卡对象落成 JSON 再交给 write 子命令：走的是 agent 真实会走的那条路，
+// 而不是直接 import writeCard——CLI 的序列化边界本身也是要测的东西。
+function writeCardViaCli(root, card) {
+  const file = join(tmp(), 'card.json')
+  writeFileSync(file, JSON.stringify(card), 'utf8')
+  return run(['write', '--vault', root, '--card', file])
 }
 
 const CARD = {
@@ -157,6 +165,93 @@ test('--json 在参数错误时也给 JSON 而不是纯文本', () => {
   assert.ok(payload.error)
 })
 
+test('index rebuild：从卡重算索引，修好手改造成的漂移', () => {
+  // 索引是派生视图，手改它必然与卡分叉。rebuild 的意义就是把这种分叉一次抹平。
+  const lib = tmp()
+  run(['init', '--vault', lib])
+  writeCardViaCli(lib, CARD)
+
+  const indexPath = join(lib, 'INDEX.md')
+  writeFileSync(indexPath, readFileSync(indexPath, 'utf8').replace('表层傻乐里层认死理', '被人手改过的旧要点'), 'utf8')
+  assert.equal(run(['check', '--vault', lib]).code, 1, '手改索引后 check 应报不一致')
+
+  const rebuilt = run(['index', 'rebuild', '--vault', lib])
+  assert.equal(rebuilt.code, 0, rebuilt.stdout)
+  assert.match(rebuilt.stdout, /1 行/)
+  assert.equal(run(['check', '--vault', lib]).code, 0, 'rebuild 后应恢复一致')
+})
+
+test('index rebuild --dry-run 只报数，不动索引', () => {
+  const lib = tmp()
+  run(['init', '--vault', lib])
+  const before = readFileSync(join(lib, 'INDEX.md'), 'utf8')
+  const r = run(['index', 'rebuild', '--vault', lib, '--dry-run'])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /将重建/)
+  assert.equal(readFileSync(join(lib, 'INDEX.md'), 'utf8'), before, '--dry-run 不该改索引')
+})
+
+test('index rebuild 跳过坏卡，好的照收，退出码 1', () => {
+  // 一张坏卡不该让整个库失去可用索引——那会把局部错误放大成全库不可用。
+  const lib = tmp()
+  run(['init', '--vault', lib])
+  writeCardViaCli(lib, CARD)
+  const badRel = '故事零件/人物设定/卡-20261023-坏.md'
+  mkdirSync(join(lib, '故事零件', '人物设定'), { recursive: true })
+  writeFileSync(join(lib, badRel), '# 坏卡\n\n## 基本信息\n\n- 卡名：坏\n', 'utf8')
+
+  const r = run(['index', 'rebuild', '--vault', lib])
+  assert.equal(r.code, 1, '有坏卡应退出码 1')
+  assert.match(r.stdout, /跳过 1 张坏卡/)
+  const rows = readFileSync(join(lib, 'INDEX.md'), 'utf8')
+  assert.match(rows, /甲/, '好卡应入索引')
+  assert.ok(!rows.includes('坏.md'), '坏卡不该入索引')
+})
+
+test('index add 只补一张卡，不重扫全库', () => {
+  const lib = tmp()
+  run(['init', '--vault', lib])
+  mkdirSync(join(lib, '故事零件', '人物设定'), { recursive: true })
+  // 绕过 write 直接放卡，模拟索引里缺一行。
+  writeFileSync(join(lib, CARD.relPath), '# 甲\n\n## 基本信息\n\n- 卡名：甲\n- 桶：故事零件\n- 类型族：S-02 人物设定\n- 子类：原型基底\n- 来源：口述\n- 来源等级：单源\n- 采集日期：2026-10-23\n- 时效状态：长期\n- 要点：表层傻乐里层认死理\n', 'utf8')
+  assert.equal(run(['check', '--vault', lib]).code, 1, '未进索引时 check 应报错')
+
+  const r = run(['index', 'add', '--vault', lib, '--path', CARD.relPath])
+  assert.equal(r.code, 0, r.stdout)
+  assert.equal(run(['check', '--vault', lib]).code, 0)
+})
+
+test('index add 缺 --path 退出码 2，路径不存在退出码 1', () => {
+  const lib = tmp()
+  run(['init', '--vault', lib])
+  assert.equal(run(['index', 'add', '--vault', lib]).code, 2)
+  assert.equal(run(['index', 'add', '--vault', lib, '--path', '故事零件/无.md']).code, 1)
+})
+
+test('index 缺动作时退出码为 2', () => {
+  const lib = tmp()
+  run(['init', '--vault', lib])
+  const r = run(['index', '--vault', lib])
+  assert.equal(r.code, 2)
+  assert.match(r.stderr, /rebuild 或 add/)
+})
+
+test('write 与 rebuild 产出的索引逐字相同，行序不取决于写入顺序', () => {
+  // 两条写索引的路径若排序不同，check 会因顺序差异误报，这里钉住它们一致。
+  const libA = tmp()
+  const libB = tmp()
+  for (const lib of [libA, libB]) run(['init', '--vault', lib])
+  const second = { ...CARD, relPath: '故事零件/剧情桥段/卡-20261023-乙.md', basic: { ...CARD.basic, 卡名: '乙', 类型族: 'S-03 剧情桥段', 要点: '开局先给一个反常动作' } }
+
+  writeCardViaCli(libA, CARD)
+  writeCardViaCli(libA, second)
+  writeCardViaCli(libB, second) // 反序写
+  writeCardViaCli(libB, CARD)
+  run(['index', 'rebuild', '--vault', libB])
+
+  assert.equal(readFileSync(join(libA, 'INDEX.md'), 'utf8'), readFileSync(join(libB, 'INDEX.md'), 'utf8'))
+})
+
 test('没有一个子命令会调 process.exit：脚本作为模块被 import 时不杀宿主', () => {
   // process.exit 会在 import 时直接终止调用方进程，测试里无法捕获，只能静态查源码。
   const source = readFileSync(join(base, 'skills', 'material-vault', 'scripts', 'vault.mjs'), 'utf8')
@@ -167,3 +262,4 @@ test('没有一个子命令会调 process.exit：脚本作为模块被 import �
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
+

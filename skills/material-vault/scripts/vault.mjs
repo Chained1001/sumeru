@@ -46,10 +46,18 @@ function renderIndex(rows) {
 }
 
 // 索引按相对路径 upsert：同一张卡重复写入不会产生两行。
+// 统一走 writeIndex，与 rebuild 共用同一套排序，两条路径产出的索引逐字相同。
 function upsertIndex(root, row) {
   const rows = readIndex(root).filter((r) => r.相对路径 !== row.相对路径)
   rows.push(row)
-  writeAtomic(join(root, 'INDEX.md'), renderIndex(rows))
+  writeIndex(root, rows)
+}
+
+// 索引是派生视图，行序不该取决于「谁先写的」：一律按相对路径排。
+// 这样 write 出来的索引与 rebuild 出来的逐字相同，check 才不会因顺序不同误报。
+function writeIndex(root, rows) {
+  const sorted = [...rows].sort((a, b) => (a.相对路径 < b.相对路径 ? -1 : a.相对路径 > b.相对路径 ? 1 : 0))
+  writeAtomic(join(root, 'INDEX.md'), renderIndex(sorted))
 }
 
 // 卡：三节（基本信息 / 类型维度 / 正文）。缺行读出空串，不因格式旧而抛错。
@@ -139,7 +147,9 @@ export function writeCard(root, card, relPath) {
   return { ok: true, issues: [], relPath: rel }
 }
 
-// —— 接口二：查一个库。身份证、索引、卡、以及「卡有没有进索引」的一致性。
+// —— 接口二：查一个库。身份证、索引、卡三方对账。
+// 索引被当作派生视图来查：由每张卡重算该有的行，与索引里的行逐列比。
+// 只查「在不在」不够——卡改了要点而索引没跟，那种漂移恰恰最难靠人眼发现。
 export function checkVault(root) {
   const issues = []
   const meta = readVaultMeta(root)
@@ -149,26 +159,33 @@ export function checkVault(root) {
   // 缺 INDEX.md 是错，空索引不是错：init 刚建出来的库就该一张卡也没有（F-09）。
   if (!existsSync(join(root, 'INDEX.md'))) issues.push('缺 INDEX.md')
   const rows = readIndex(root)
-  const indexed = new Set()
+  const byPath = new Map(rows.map((r) => [r.相对路径, r]))
+
   for (const row of rows) {
-    const file = join(root, row.相对路径)
-    indexed.add(row.相对路径)
-    if (!existsSync(file)) {
-      issues.push(`索引行指向不存在的卡：${row.相对路径}`)
-      continue
-    }
-    const card = readCard(file)
-    for (const i of checkBasic(card.basic)) issues.push(`${row.相对路径}：${i}`)
-    if (card.basic.卡名 && row.卡名 !== card.basic.卡名) issues.push(`${row.相对路径}：索引卡名与卡不一致`)
+    if (!existsSync(join(root, row.相对路径))) issues.push(`索引行指向不存在的卡：${row.相对路径}`)
   }
 
   for (const rel of listCards(root)) {
-    if (!indexed.has(rel)) issues.push(`卡未进索引：${rel}`)
+    const card = readCard(join(root, rel))
+    for (const i of checkBasic(card.basic)) issues.push(`${rel}：${i}`)
+
+    const row = byPath.get(rel)
+    if (!row) {
+      issues.push(`卡未进索引：${rel}`)
+      continue
+    }
+    // 逐列比对：索引里的每一列都应等于「由这张卡重算出来的那一列」。
+    const want = indexRow(card, rel)
+    for (const col of INDEX_COLUMNS) {
+      const got = row[col] ?? ''
+      if (got !== want[col]) issues.push(`索引与卡不一致：${rel} 的「${col}」索引写「${got}」，卡上是「${want[col]}」`)
+    }
   }
   return issues
 }
 
 // 库里的卡：<桶>/<类型族>/卡-*.md。只认这个形状，其它文件不是卡。
+// 已删卡片/ 是删卡的回收站（F-14），里面的东西不是活卡，不扫。
 function listCards(root) {
   const out = []
   const walk = (dir, depth) => {
@@ -182,6 +199,34 @@ function listCards(root) {
   }
   walk(root, 0)
   return out
+}
+
+// —— 接口三：重建索引（F-09 / F-14 的前置）。索引本是派生视图，删了也能重算出来。
+// 卡坏了不拦整次重建：好的照收，坏的单独报，免得一张坏卡让整个库失去可用的索引。
+function rebuildIndex(root, { dryRun = false } = {}) {
+  const rows = []
+  const skipped = []
+  for (const rel of listCards(root)) {
+    const card = readCard(join(root, rel))
+    const issues = checkBasic(card.basic)
+    if (issues.length) {
+      skipped.push({ rel, issues })
+      continue
+    }
+    rows.push(indexRow(card, rel))
+  }
+  if (!dryRun) writeIndex(root, rows)
+  return { rows, skipped, dryRun }
+}
+
+// —— 接口四：把一张卡补进索引（F-09）。等价于只对这卡重算一行，不重扫全库。
+function indexCard(root, rel) {
+  if (!existsSync(join(root, rel))) return { ok: false, issues: [`卡不存在：${rel}`] }
+  const card = readCard(join(root, rel))
+  const issues = checkBasic(card.basic)
+  if (issues.length) return { ok: false, issues }
+  upsertIndex(root, indexRow(card, rel))
+  return { ok: true, issues: [] }
 }
 
 // —— 库定位（F-06）：给了 --vault 直用；否则从当前目录逐级向上找含 VAULT.md 的目录；
@@ -216,26 +261,31 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
 子命令
   detect            找当前该用哪个库（F-06）
   init              建库：写身份证、索引表头与四个桶目录（F-09）
-  check             校验库：身份证、索引、卡、以及卡是否都进了索引
+  check             校验库：身份证、索引、卡三方对账（逐列比）
+  index rebuild     从卡重算整个索引；坏卡跳过并单独报
+  index add         只把一张卡补进索引，不重扫全库
   write             按 JSON 写一张卡，顺带修好索引
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
   --intro <一行>    init 时写进身份证的简介
   --card <路径>     write 的卡内容 JSON 文件，- 表示从标准输入读
+  --path <相对路径> index add 要补进索引的卡
+  --dry-run         index rebuild 只报数不落盘
   --json            输出单个 JSON 对象
   --help, -h        显示本说明`
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
-const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write'])
+const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index'])
 
 export function parseCliArgs(argv) {
-  const options = { cmd: '', json: false, help: false }
+  const options = { cmd: '', action: '', json: false, help: false, dryRun: false }
   const positional = []
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--json') options.json = true
+    else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--help' || arg === '-h') options.help = true
     else if (FLAGS_WITH_VALUE.has(arg)) {
       const value = argv[++i]
@@ -244,8 +294,10 @@ export function parseCliArgs(argv) {
     } else if (arg.startsWith('-') && arg !== '-') throw new Error(`未知参数 ${arg}。\n${USAGE}`)
     else positional.push(arg)
   }
-  if (positional.length > 1) throw new Error(`多余的参数 ${positional.slice(1).join(' ')}。\n${USAGE}`)
+  // 子命令最多两段（index rebuild）：第一段是命令，第二段是它的动作。
+  if (positional.length > 2) throw new Error(`多余的参数 ${positional.slice(2).join(' ')}。\n${USAGE}`)
   options.cmd = positional[0] ?? ''
+  options.action = positional[1] ?? ''
   return options
 }
 
@@ -303,6 +355,39 @@ export function runCli(argv, io = {}) {
     return 1
   }
   const root = resolved.root
+
+  if (options.cmd === 'index') {
+    if (options.action === 'rebuild') {
+      const { rows, skipped, dryRun } = rebuildIndex(root, { dryRun: options.dryRun })
+      const skippedText = skipped.length
+        ? `\n跳过 ${skipped.length} 张坏卡（未入索引，请先修）：\n${skipped.map((s) => `- ${s.rel}：${s.issues.join('；')}`).join('\n')}`
+        : ''
+      const verb = dryRun ? '将重建' : '已重建'
+      emit(
+        { ok: skipped.length === 0, errors: skipped.map((s) => ({ file: s.rel, message: s.issues.join('；') })), data: { root, cards: rows.length, dryRun } },
+        `${verb}索引，${rows.length} 行${skippedText}`,
+      )
+      // 有坏卡时退出码 1：索引虽已重建，但库还不是干净的，不能让它悄悄过去。
+      return skipped.length ? 1 : 0
+    }
+    if (options.action === 'add') {
+      // 用 --path 而不是 --card：write 的 --card 指 JSON 文件，这里指卡的相对路径，
+      // 同名不同义会让调用方写错，宁可变一个名字。
+      if (!options.path) {
+        err(`index add 需要 --path <卡的相对路径>。\n${USAGE}`)
+        return 2
+      }
+      const result = indexCard(root, options.path)
+      if (!result.ok) {
+        emit({ ok: false, errors: result.issues.map((m) => ({ message: m })), data: {} }, `未补进索引：\n${result.issues.map((i) => `- ${i}`).join('\n')}`)
+        return 1
+      }
+      emit({ ok: true, errors: [], data: { relPath: options.path } }, `已补进索引：${options.path}`)
+      return 0
+    }
+    err(`index 需要动作：rebuild 或 add。\n${USAGE}`)
+    return 2
+  }
 
   if (options.cmd === 'check') {
     const issues = checkVault(root)
