@@ -1,0 +1,19 @@
+{
+  "name": "{{项目名}}",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TODO：一句话说明本仓库发布哪些技能",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/{{owner}}/{{repo}}.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "test": "node -e \"const m=Number(process.versions.node.split('.')[0]);const need=Number((require('./package.json').engines.node.match(/(\\d+)/)||[])[1]);if(need&&m<need){console.error('需要 Node.js '+need+' 及以上，当前 '+process.version+'；请升级后重试');process.exit(1)}\" && node --test --test-isolation=none \"test/*.test.mjs\""
+  }
+}

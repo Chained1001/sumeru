@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # 本仓库零依赖，没有 package-lock.json，所以不跑 npm ci，也不开 cache。
+      # 照抄官方 Node 模板加 cache: 'npm' 会因找不到锁文件而失败。
+      - name: 静态校验 skills/
+        run: npm run validate
+      - name: 运行测试
+        run: npm test
