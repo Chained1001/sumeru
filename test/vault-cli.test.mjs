@@ -908,10 +908,71 @@ test('源指纹对同一目录稳定：尾斜杠不影响', () => {
   assert.equal(fingerprintOf(src), fingerprintOf(src + '/'), '同一目录换个写法该认成同一份活')
 })
 
-test('源指纹区分内容不同的目录', () => {
+test('源指纹区分不同的目录，且不因目录内文件增删而变', () => {
   const one = sourceDir(['a.md'])
   const two = sourceDir(['b.md'])
-  assert.notEqual(fingerprintOf(one), fingerprintOf(two), '内容不同不该共用进度')
+  assert.notEqual(fingerprintOf(one), fingerprintOf(two), '不同目录不该共用进度')
+
+  // 关键：指纹只看目录路径，不看文件清单。否则采集途中删一个文件，
+  // 旧进度立刻找不回来，整份素材要重采——而删文件是最常发生的事。
+  const before = fingerprintOf(one)
+  writeFileSync(join(one, 'new.md'), '# x', 'utf8')
+  assert.equal(fingerprintOf(one), before, '目录里加了文件，指纹不该变，否则进度会丢')
+  rmSync(join(one, 'a.md'), { force: true })
+  assert.equal(fingerprintOf(one), before, '目录里删了文件，指纹不该变，否则进度会丢')
+})
+
+// —— collect status：续采前先看还剩多少。没有它，用户无法知道自己停在哪。
+test('collect status 在没采过时退出 1 并说清还没采过', () => {
+  const src = sourceDir(['a1.md', 'a2.md'])
+  const root = tmp()
+  run(['init', '--vault', root])
+  const r = run(['collect', 'status', '--vault', root, '--source', src])
+  assert.equal(r.code, 1, '没进度不是错误但也不该报成 0，否则与「有进度」分不开')
+  assert.match(r.stdout, /还没采过/)
+  assert.match(r.stdout, /2 个/, '应报总待采数')
+})
+
+test('collect status 报已记与剩余，并列出待采文件', () => {
+  const src = sourceDir(['a1.md', 'a2.md', 'a3.md', 'a4.md'])
+  const root = tmp()
+  run(['init', '--vault', root])
+  const fp = fingerprintOf(src)
+  run(['collect', 'mark', '--vault', root, '--source', src, '--fingerprint', fp, '--done', 'a1.md,a2.md'])
+  const r = run(['collect', 'status', '--vault', root, '--source', src])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /已记 2／4/)
+  assert.match(r.stdout, /剩 2 个/)
+  assert.match(r.stdout, /a3\.md/)
+  assert.ok(!/^- a1\.md/m.test(r.stdout), '已采过的不该出现在待采清单里')
+})
+
+test('collect status 报出进度里记着但来源目录已找不到的文件', () => {
+  const src = sourceDir(['a1.md', 'a2.md'])
+  const root = tmp()
+  run(['init', '--vault', root])
+  const fp = fingerprintOf(src)
+  run(['collect', 'mark', '--vault', root, '--source', src, '--fingerprint', fp, '--done', 'a1.md,a2.md'])
+  rmSync(join(src, 'a2.md'), { force: true })
+  const r = run(['collect', 'status', '--vault', root, '--source', src])
+  assert.match(r.stdout, /找不到/, '文件没了要如实说，否则剩几个数对不上还没人知道')
+})
+
+test('collect status 采完后报全部采完', () => {
+  const src = sourceDir(['a1.md'])
+  const root = tmp()
+  run(['init', '--vault', root])
+  const fp = fingerprintOf(src)
+  run(['collect', 'mark', '--vault', root, '--source', src, '--fingerprint', fp, '--done', 'a1.md'])
+  const r = run(['collect', 'status', '--vault', root, '--source', src])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /全部采完/)
+})
+
+test('collect status 缺 --source 时报参数错误', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  assert.equal(run(['collect', 'status', '--vault', root]).code, 2)
 })
 
 // —— 多格式输入（F-18）：钉住「四种形态各有出路」与「做不到就说做不到」。
@@ -937,6 +998,114 @@ test('SKILL 的停止条件认多格式：读不了就说，不再笼统写「�
   assert.match(text, /做不到/, '停止条件没写「做不到」，遇到读不了的形态会含糊过去')
   assert.ok(!/含未数字化的图片、语音时，停止并询问用户/.test(text), '0.5.0 起能读图与语音，旧口径该换掉')
 })
+
+// —— 示范库（F-11、F-24）。A-05 的验收是「十族有卡、无私有卡（含全部点子卡）、门禁绿」。
+// 这些断言不是形式：示范库泄露一张私有卡，就是把作者的原创点子公开出去了。
+const DEMO = join(base, 'skills', 'material-vault', 'demo-vault')
+
+function demoCards() {
+  const out = []
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name)
+      if (e.isDirectory()) walk(full)
+      else if (e.isFile() && /^卡-.*\.md$/.test(e.name)) out.push(full)
+    }
+  }
+  walk(DEMO)
+  return out
+}
+
+function cardField(text, name) {
+  const m = new RegExp('^- ' + name + '：(.*)', 'm').exec(text)
+  return m ? m[1].trim() : ''
+}
+
+test('示范库十族各有一张卡，且不含开书点子族的任何卡', () => {
+  const cards = demoCards()
+  assert.equal(cards.length, 10, '示范库该是十张卡（十族各一），实际 ' + cards.length)
+  const families = cards.map((f) => cardField(readFileSync(f, 'utf8'), '类型族'))
+  const distinct = [...new Set(families)].sort()
+  const expected = ['S-02', 'S-03', 'S-04', 'S-05', 'S-06', 'S-07', 'S-08', 'S-09', 'S-10', 'S-11']
+  assert.deepEqual(distinct.map((f) => f.slice(0, 4)), expected, '十族应恰好是 S-02 至 S-11')
+  // 点子族整族不进示范库：那是作者的原创资产，泄露等于送人。
+  assert.ok(!families.some((f) => f.startsWith('S-01')), '示范库混进了开书点子，这是最严重的一类泄露')
+})
+
+test('示范库每张卡都非私有', () => {
+  for (const f of demoCards()) {
+    const text = readFileSync(f, 'utf8')
+    assert.equal(cardField(text, '私有'), '否', f + ' 的「私有」不是「否」，私有卡不得进示范库')
+  }
+})
+
+test('示范库自身通过 check', () => {
+  const r = run(['check', '--vault', DEMO])
+  assert.equal(r.code, 0, '示范库 check 未通过：' + r.stdout + r.stderr)
+  assert.match(r.stdout, /库校验通过/)
+})
+
+test('示范库的卡是活卡：find 能查到，索引读得到', () => {
+  const r = run(['find', '--vault', DEMO, '--bucket', '故事零件', '--json'])
+  assert.equal(r.code, 0)
+  const payload = JSON.parse(r.stdout)
+  assert.ok(payload.data.count >= 5, '故事零件桶该至少有 5 张示范卡（S-02 至 S-06），实际 ' + payload.data.count)
+})
+
+test('示范库的卡不含占位符与反引号 .md 路径', () => {
+  for (const f of demoCards()) {
+    const text = readFileSync(f, 'utf8')
+    assert.ok(!/TODO|\{\{/.test(text), f + ' 含占位符')
+    const links = [...text.matchAll(/`([^`\s]+\.md)`/g)].map((m) => m[1])
+    assert.deepEqual(links, [], f + ' 里有反引号包裹的 .md 路径，validate 会当链接校验：' + links.join('、'))
+  }
+})
+
+test('示范库带一份说明，讲明这是别人的示范、别往里加东西', () => {
+  const text = readFileSync(join(DEMO, 'README.md'), 'utf8')
+  assert.match(text, /别人的/, '说明没讲清这是别人的素材')
+  assert.match(text, /自己建/, '说明没讲清用户的库要自己建')
+  assert.match(text, /会被覆盖/, '说明没拦住用户往示范库里加卡')
+})
+
+test('SKILL 与 05 都写了示范库的引导', () => {
+  const skill = readFileSync(join(base, 'skills', 'material-vault', 'SKILL.md'), 'utf8')
+  assert.match(skill, /demo-vault/, '入口没提示范库在哪')
+  assert.match(skill, /别人的/, '入口没讲清示范库是别人的')
+  assert.match(skill, /不要往示范库|不往 `demo-vault\/` 里写/, '入口没写「别往示范库写」')
+  const loc = workflow('05-库定位.md')
+  assert.match(loc, /demo-vault/, '05 没处理「用户把示范库当自己的库」这一情形')
+})
+
+
+test('示范库每张卡的维度行名与注册表该族要求逐行一致', () => {
+  // 这条是最容易漏的：卡能写进去、check 也通过，但维度行名与注册表不符——
+  // writeCard 只校验基本信息与格式，不校验类型维度行名与族对不对应。
+  // 示范库是给新用户照抄的模板，行名错了会被抄一路。
+  const reg = readFileSync(join(base, 'skills', 'material-vault', 'references', '类型注册表.md'), 'utf8')
+  const fams = new Map()
+  for (const line of reg.split('\n')) {
+    const row = /^\| (S-\d{2}) \| ([^|]+) \|/.exec(line)
+    const seg = /按维度抽取：([^；|]+)/.exec(line)
+    if (!row || !seg) continue
+    const dims = seg[1].replace(/（[^）]*）/g, '').split(/[、，]/).map((s) => s.trim()).filter(Boolean)
+    fams.set(row[1], dims)
+  }
+  assert.ok(fams.size >= 10, '注册表解析出的族数偏少：' + fams.size)
+
+  for (const f of demoCards()) {
+    const text = readFileSync(f, 'utf8')
+    const id = (/- 类型族：(S-\d{2})/.exec(text) || [])[1]
+    assert.ok(id, f + ' 读不出类型族')
+    const want = fams.get(id)
+    assert.ok(want, id + ' 在注册表里没有维度要求')
+    const sec = /## 类型维度\n([\s\S]*?)\n## /.exec(text)
+    assert.ok(sec, f + ' 缺类型维度节')
+    const got = [...sec[1].matchAll(/^- ([^：]+)：/gm)].map((m) => m[1].trim())
+    assert.deepEqual(got, want, f + ' 的维度行名与注册表 ' + id + ' 不一致')
+  }
+})
+
 
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })

@@ -5,7 +5,7 @@
 // 用法：node scripts/vault.mjs <子命令> [选项]，子命令与选项见 --help。
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { join, dirname, relative, sep, basename, isAbsolute } from 'node:path'
+import { join, dirname, relative, sep, basename, isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, FIELD_NAMES, BUCKETS, defaultPrivate } from './cardFormat.mjs'
 
@@ -457,12 +457,20 @@ export const PROGRESS_DIR = '.收编进度'
 
 // 源指纹：目录绝对路径的最后一段 + 文件清单的哈希。只看路径不够——同一个
 // 路径下内容换了，进度就不该复用；只看内容也不够——两份内容相同的目录是两件活。
+// 源指纹：来源目录的绝对路径的哈希，不含文件清单。
+// 为什么不含文件清单：清单一变（用户删了一个文件、改了名）指纹就变，旧进度
+// 立刻找不回来，整份素材得重采——而删文件恰恰是采集过程中最常发生的事。
+// 只取路径也够区分：不同目录的绝对路径必然不同，同目录换个写法（尾斜杠、
+// 相对路径）经 resolve 归一后一致。
+// 代价是挪动或改名来源目录会丢进度；这比「删个文件就重采」少见，也更容易
+// 向用户解释——而且 collect status 会报出找不到的文件，不会静默出错。
 function sourceFingerprint(sourceDir) {
   const files = listSourceFiles(sourceDir)
-  const hash = createHash('sha256')
-  hash.update(basename(sourceDir).toLowerCase())
-  for (const f of files) hash.update(`\u0000${f}`)
-  return { fingerprint: hash.digest('hex').slice(0, 12), files }
+  const abs = resolve(sourceDir)
+  // 大小写归一：Windows 上 C:\a 与 c:\a 是同一个目录。
+  const key = process.platform === 'win32' ? abs.toLowerCase() : abs
+  const fingerprint = createHash('sha256').update(key).digest('hex').slice(0, 12)
+  return { fingerprint, files, abs }
 }
 
 // 待采清单：只收可读的文本文件。图片与音视频不在此处理（交回入口走多格式判定），
@@ -500,6 +508,7 @@ export function planCollection(sourceDir) {
   const other = checked.files.filter((f) => !TEXT_EXT.test(f) && !MEDIA_EXT.test(f))
   return {
     fingerprint: checked.fingerprint,
+    source: checked.abs,
     total: texts.length,
     texts,
     // 认不出扩展名的也归到这里，交给使用者判断，不替他们丢。
@@ -718,6 +727,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   find              查重：按桶、类型族、子类、关键词收窄索引，命中才比对（F-19）
   collect plan      清点来源目录：列出可采的文本文件与不采的其他文件，给源指纹（F-22）
   collect mark      把本批采完的文件记进进度，并报还剩多少（F-22）
+  collect status    查这份素材采到哪了、还剩哪些（F-22）
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
@@ -804,8 +814,8 @@ export function runCli(argv, io = {}) {
 
   // collect 的动作名同样先验：action 拼错时，plan 与 mark 两条分支都不进，
   // 会一路走到「未找到库」或静默成功，两种都不好查。
-  if (options.cmd === 'collect' && !['plan', 'mark'].includes(options.action)) {
-    const message = `collect 需要动作：plan（清点来源）或 mark（记进度）；给的是「${options.action}」`
+  if (options.cmd === 'collect' && !['plan', 'mark', 'status'].includes(options.action)) {
+    const message = `collect 需要动作：plan（清点来源）、mark（记进度）或 status（看还剩多少）；给的是「${options.action}」`
     emit({ ok: false, error: message, data: { action: options.action } }, message)
     return 2
   }
@@ -960,6 +970,37 @@ export function runCli(argv, io = {}) {
       ? `\n下次从这些接着采：\n${result.remaining.slice(0, 10).map((f) => `- ${f}`).join('\n')}${result.remaining.length > 10 ? `\n… 还有 ${result.remaining.length - 10} 个` : ''}`
       : '\n全部采完了，跑一次 check 复核库。'
     emit({ ok: true, errors: [], data: { done: result.done.length, remaining: result.remaining, total: result.total } }, head + next)
+    return 0
+  }
+
+  if (options.cmd === 'collect' && options.action === 'status') {
+    if (!options.source) {
+      emit({ ok: false, error: 'collect status 需要 --source <目录>', data: {} }, 'collect status 需要 --source <目录>')
+      return 2
+    }
+    if (!existsSync(options.source) || !statSync(options.source).isDirectory()) {
+      emit({ ok: false, error: `来源目录不存在或不是目录：${options.source}`, data: {} }, `来源目录不存在或不是目录：${options.source}`)
+      return 1
+    }
+    const plan = planCollection(options.source)
+    const prog = readProgress(root, plan.fingerprint)
+    if (!prog.exists) {
+      // 没进度不是错误，是「这份素材没采过」。返回 0 但 ok:false 会让调用方
+      // 不好分辨，故用退出码 1 + 一句明确的「没采过」，与「查到了」区分开。
+      const message = `这份素材还没采过（共 ${plan.total} 个待采文件，源指纹 ${plan.fingerprint}）`
+      emit({ ok: false, error: message, data: { fingerprint: plan.fingerprint, total: plan.total, started: false } }, message)
+      return 1
+    }
+    const remaining = plan.texts.filter((f) => !prog.done.includes(f))
+    // 进度里记的文件若已不在来源目录（被删或改名），要点出来，否则剩余数会对不上。
+    const vanished = prog.done.filter((f) => !plan.texts.includes(f))
+    const head = `已记 ${prog.done.length}／${plan.total}，剩 ${remaining.length} 个${prog.updatedAt ? `（上次更新 ${prog.updatedAt.slice(0, 10)}）` : ''}`
+    const list = remaining.length ? `\n待采：\n${remaining.slice(0, 20).map((f) => `- ${f}`).join('\n')}${remaining.length > 20 ? `\n… 还有 ${remaining.length - 20} 个` : ''}` : '\n全部采完了。'
+    const gone = vanished.length ? `\n\n注意：进度里记着 ${vanished.length} 个文件，但来源目录里已找不到（被删或改名）：\n${vanished.map((f) => `- ${f}`).join('\n')}` : ''
+    emit(
+      { ok: true, errors: [], data: { fingerprint: plan.fingerprint, total: plan.total, started: true, done: prog.done, remaining, vanished } },
+      head + list + gone,
+    )
     return 0
   }
 
