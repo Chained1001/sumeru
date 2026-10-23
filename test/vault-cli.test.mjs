@@ -661,6 +661,35 @@ test('--help 列出五个 card 动作与它们的选项', () => {
   }
 })
 
+// —— 批五：流程文件层面的约束（F-07、F-16）。五小节齐全与序号连续归 validate.mjs 管，
+// 这里只钉两条机器能钉、且漂了不会有人发现的规则：浏览的日期从哪来、浏览不许写库。
+const workflow = (name) => readFileSync(join(base, 'skills', 'material-vault', 'workflows', name), 'utf8')
+
+test('06 浏览：最近 5 张的日期只从文件名的 YYYYMMDD 段取，不读卡正文', () => {
+  const text = workflow('06-浏览.md')
+  assert.match(text, /YYYYMMDD/, '流程没写清日期段的形状，agent 只能猜')
+  assert.match(text, /文件名/, '流程没把日期来源钉在文件名上')
+  // 索引列里确实没有采集日期：这是「只能读文件名」的根据，写进流程才算说清为什么。
+  const cols = readFileSync(join(base, 'skills', 'material-vault', 'scripts', 'cardFormat.mjs'), 'utf8')
+  const indexCols = /export const INDEX_COLUMNS = \[([^\]]*)\]/.exec(cols)[1]
+  assert.ok(!indexCols.includes('采集日期'), '索引列里已有采集日期，流程该改为直接读索引列')
+  assert.match(text, /不读卡正文|不打开卡/, '流程没写明不读卡正文（F-16 的省上下文要求）')
+})
+
+test('06 浏览是只读流程：不出现任何写库子命令', () => {
+  const text = workflow('06-浏览.md')
+  const writeCommands = [...text.matchAll(/vault\.mjs (write|init|upgrade|index|card|check)/g)].map((m) => m[1])
+  assert.deepEqual(writeCommands, [], `只读流程里出现了写库子命令：${writeCommands.join('、')}`)
+})
+
+test('05 库定位：只给「新建」与「指向已有」两选，并写明本版没有收编散料', () => {
+  const text = workflow('05-库定位.md')
+  assert.match(text, /新建/, '缺「新建」这一支')
+  assert.match(text, /指向已有/, '缺「指向已有」这一支')
+  assert.match(text, /没有「?收编散料」?/, '流程没写明本版没有收编散料，agent 会自己发挥出第三选')
+  assert.match(text, /0\.5\.0/, '没写明收编散料要到哪个版本才有')
+})
+
 test('没有一个子命令会调 process.exit：脚本作为模块被 import 时不杀宿主', () => {
   // process.exit 会在 import 时直接终止调用方进程，测试里无法捕获，只能静态查源码。
   const source = readFileSync(join(base, 'skills', 'material-vault', 'scripts', 'vault.mjs'), 'utf8')
