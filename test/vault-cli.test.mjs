@@ -3,7 +3,7 @@
 // 因此这些用例在禁止子进程管道的沙箱里照样跑（那条 spawn 探测只剩一条端到端用例需要）。
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -92,7 +92,7 @@ test('init 一次写齐身份证、索引表头与四个桶目录', () => {
     assert.ok(existsSync(join(lib, name)), `init 未建出 ${name}`)
   }
   const meta = readFileSync(join(lib, 'VAULT.md'), 'utf8')
-  assert.match(meta, /版本：1/)
+  assert.match(meta, /版本：2/)
   assert.match(meta, /简介：我的库/)
 })
 
@@ -213,7 +213,7 @@ test('index add 只补一张卡，不重扫全库', () => {
   run(['init', '--vault', lib])
   mkdirSync(join(lib, '故事零件', '人物设定'), { recursive: true })
   // 绕过 write 直接放卡，模拟索引里缺一行。
-  writeFileSync(join(lib, CARD.relPath), '# 甲\n\n## 基本信息\n\n- 卡名：甲\n- 桶：故事零件\n- 类型族：S-02 人物设定\n- 子类：原型基底\n- 来源：口述\n- 来源等级：单源\n- 采集日期：2026-10-23\n- 时效状态：长期\n- 要点：表层傻乐里层认死理\n', 'utf8')
+  writeFileSync(join(lib, CARD.relPath), '# 甲\n\n## 基本信息\n\n- 卡名：甲\n- 桶：故事零件\n- 类型族：S-02 人物设定\n- 子类：原型基底\n- 来源：口述\n- 来源等级：单源\n- 采集日期：2026-10-23\n- 时效状态：长期\n- 私有：否\n- 要点：表层傻乐里层认死理\n', 'utf8')
   assert.equal(run(['check', '--vault', lib]).code, 1, '未进索引时 check 应报错')
 
   const r = run(['index', 'add', '--vault', lib, '--path', CARD.relPath])
@@ -252,6 +252,99 @@ test('write 与 rebuild 产出的索引逐字相同，行序不取决于写入�
   assert.equal(readFileSync(join(libA, 'INDEX.md'), 'utf8'), readFileSync(join(libB, 'INDEX.md'), 'utf8'))
 })
 
+// —— 批三：升级到格式版本 2，把「私有」转必填（A-06）
+
+// 造一个格式第 1 版的老库：卡上没有「私有」行，VAULT.md 记版本 1。
+function makeV1Lib() {
+  const lib = tmp()
+  mkdirSync(join(lib, '故事零件', '人物设定'), { recursive: true })
+  mkdirSync(join(lib, '故事零件', '开书点子'), { recursive: true })
+  writeFileSync(join(lib, 'VAULT.md'), '# 素材库身份证\n\n版本：1\n简介：老库\n', 'utf8')
+  const v1Card = (name, family, sub) => `# ${name}\n\n## 基本信息\n\n- 卡名：${name}\n- 桶：故事零件\n- 类型族：${family}\n- 子类：${sub}\n- 来源：口述\n- 出处链接：\n- 来源等级：单源\n- 采集日期：2026-10-01\n- 时效状态：长期\n- 要点：${name}的要点\n\n## 类型维度\n\n- 性格核：反差\n\n## 正文\n\n- 内容：底盘\n`
+  const a = join(lib, '故事零件', '人物设定', '卡-20261001-老卡甲.md')
+  const b = join(lib, '故事零件', '开书点子', '卡-20261001-老点子.md')
+  writeFileSync(a, v1Card('老卡甲', 'S-02 人物设定', '原型基底'), 'utf8')
+  writeFileSync(b, v1Card('老点子', 'S-01 开书点子', '高概念'), 'utf8')
+  return { lib, cards: [a, b] }
+}
+
+test('upgrade --dry-run 列清单且一个字节都不改', () => {
+  const { lib, cards } = makeV1Lib()
+  const before = cards.map((f) => readFileSync(f, 'utf8'))
+
+  const r = run(['upgrade', '--vault', lib, '--dry-run'])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  assert.match(r.stdout, /未落盘/)
+  assert.match(r.stdout, /2 张卡/)
+  assert.match(r.stdout, /私有=否/)
+  assert.match(r.stdout, /私有=是/)
+  assert.deepEqual(cards.map((f) => readFileSync(f, 'utf8')), before, '--dry-run 改了文件')
+})
+
+test('upgrade 实跑：补私有、版本升 2、check 通过', () => {
+  const { lib, cards } = makeV1Lib()
+  assert.equal(run(['check', '--vault', lib]).code, 1, 'v1 老库 check 应失败')
+
+  const r = run(['upgrade', '--vault', lib])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  assert.match(readFileSync(cards[0], 'utf8'), /^- 私有：否$/m)
+  assert.match(readFileSync(cards[1], 'utf8'), /^- 私有：是$/m)
+  assert.match(readFileSync(join(lib, 'VAULT.md'), 'utf8'), /版本：2/)
+  assert.equal(run(['check', '--vault', lib]).code, 0, '升级后 check 应通过')
+})
+
+test('upgrade 重跑不产生任何改动：内容与 mtime 均不变', () => {
+  // A-06 明写这一条。无条件重写会让每次重跑都刷新 mtime，升级就不再幂等。
+  const { lib, cards } = makeV1Lib()
+  run(['upgrade', '--vault', lib])
+  const targets = [...cards, join(lib, 'VAULT.md'), join(lib, 'INDEX.md')]
+  const before = targets.map((f) => ({ text: readFileSync(f, 'utf8'), mtime: statSync(f).mtimeMs }))
+
+  const r = run(['upgrade', '--vault', lib])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /没有要升级的卡/)
+  targets.forEach((f, i) => {
+    assert.equal(readFileSync(f, 'utf8'), before[i].text, `${f} 内容变了`)
+    assert.equal(statSync(f).mtimeMs, before[i].mtime, `${f} 的 mtime 变了，升级不幂等`)
+  })
+})
+
+test('upgrade 把已删字段挪进「历史字段」，值不丢', () => {
+  // 删一个字段不等于删它的数据：老值挪走留着，人还能看回去。
+  const { lib, cards } = makeV1Lib()
+  writeFileSync(cards[0], readFileSync(cards[0], 'utf8').replace('- 要点：', '- 旧来源：贴吧\n- 要点：'), 'utf8')
+  const r = run(['upgrade', '--vault', lib])
+  assert.equal(r.code, 0, r.stdout + r.stderr)
+  const text = readFileSync(cards[0], 'utf8')
+  assert.match(text, /历史字段：旧来源=贴吧/, '老值没挪进历史字段')
+  assert.ok(!/^- 旧来源：/m.test(text), '被删字段应已移出基本信息')
+})
+
+test('upgrade 对补不出的必填字段填「待补」并退出码 1', () => {
+  const { lib, cards } = makeV1Lib()
+  writeFileSync(cards[0], readFileSync(cards[0], 'utf8').replace('- 来源等级：单源\n', ''), 'utf8')
+  const r = run(['upgrade', '--vault', lib])
+  assert.equal(r.code, 1, '有待补字段应退出码 1')
+  assert.match(r.stdout, /待补/)
+  assert.match(readFileSync(cards[0], 'utf8'), /- 来源等级：待补/)
+})
+
+test('upgrade 在缺身份证时退出码 1 并说明原因', () => {
+  const lib = tmp()
+  const r = run(['upgrade', '--vault', lib])
+  assert.equal(r.code, 1)
+  assert.match(r.stdout, /缺 VAULT\.md/)
+})
+
+test('当前格式的新库跑 upgrade 是空操作', () => {
+  const lib = tmp()
+  run(['init', '--vault', lib])
+  writeCardViaCli(lib, CARD)
+  const before = readFileSync(join(lib, CARD.relPath), 'utf8')
+  const r = run(['upgrade', '--vault', lib])
+  assert.equal(r.code, 0)
+  assert.equal(readFileSync(join(lib, CARD.relPath), 'utf8'), before)
+})
 test('没有一个子命令会调 process.exit：脚本作为模块被 import 时不杀宿主', () => {
   // process.exit 会在 import 时直接终止调用方进程，测试里无法捕获，只能静态查源码。
   const source = readFileSync(join(base, 'skills', 'material-vault', 'scripts', 'vault.mjs'), 'utf8')

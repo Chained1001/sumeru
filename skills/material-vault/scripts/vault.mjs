@@ -6,10 +6,11 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, rmSync } from 'node:fs'
 import { join, dirname, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, BUCKETS, defaultPrivate } from './cardFormat.mjs'
+import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, FIELD_NAMES, BUCKETS, defaultPrivate } from './cardFormat.mjs'
 
 export { FIELDS, INDEX_COLUMNS, defaultPrivate, checkBasic }
-export const SCHEMA_VERSION = 1
+// 格式版本：1 是老库（卡上无「私有」行），2 起「私有」必填。升级见 upgradeVault。
+export const SCHEMA_VERSION = 2
 
 // —— 身份证（VAULT.md）：格式版本＋一句话简介
 function readVaultMeta(root) {
@@ -229,6 +230,76 @@ function indexCard(root, rel) {
   return { ok: true, issues: [] }
 }
 
+// —— 接口五：把老库升到当前格式（F-10）。跨多个版本一次做完。
+// 只补不丢：机器补得出的字段补上，补不出的填「待补」并列进清单；
+// 卡上已不在契约里的字段挪进「历史字段」行，不直接抹掉。
+// 关键：内容没变就一个字节都不写。A-06 要求重跑升级后 mtime 与内容均不变，
+// 无条件 writeAtomic 会让每次重跑都刷新 mtime，升级就不再幂等。
+export function upgradeVault(root, { dryRun = false } = {}) {
+  const meta = readVaultMeta(root)
+  if (!meta.exists) return { ok: false, issues: ['缺 VAULT.md 身份证，无法判断从哪版升'], changed: [], pending: [] }
+  const from = meta.version ?? 0
+  const changed = []
+  const pending = []
+
+  for (const rel of listCards(root)) {
+    const file = join(root, rel)
+    const card = readCard(file)
+    const before = readFileSync(file, 'utf8')
+
+    const basic = { ...card.basic }
+    const filled = []
+    for (const f of FIELDS) {
+      if (basic[f.名] !== undefined && basic[f.名] !== '') continue
+      if (f.名 === '私有') {
+        // 私有有默认值可算，不必记「待补」。
+        basic.私有 = defaultPrivate(basic.类型族)
+        filled.push(`私有=${basic.私有}`)
+      } else if (f.必填) {
+        // 必填但机器猜不出来的，填「待补」并让用户知道要回来补什么。
+        basic[f.名] = '待补'
+        filled.push(`${f.名}=待补`)
+        pending.push({ rel, field: f.名 })
+      }
+    }
+
+    // 契约里已没有的字段挪进「历史字段」，值留着：删字段不等于删数据。
+    const known = new Set(FIELD_NAMES)
+    const retired = Object.keys(basic).filter((k) => !known.has(k) && k !== '历史字段')
+    if (retired.length) {
+      const old = retired.map((k) => `${k}=${basic[k]}`).join('，')
+      basic.历史字段 = basic.历史字段 ? `${basic.历史字段}，${old}` : old
+      for (const k of retired) delete basic[k]
+      filled.push(`历史字段+${retired.join('、')}`)
+    }
+
+    if (filled.length === 0) continue
+
+    const next = { basic, dimension: card.dimension, body: card.body }
+    const after = renderCard(next)
+    // 内容相同就不写：字段可能被补成它本来就等价的空值，那种情况不该刷新 mtime。
+    if (after === before) continue
+
+    changed.push({ rel, filled })
+    if (!dryRun) {
+      writeAtomic(file, after)
+      upsertIndex(root, indexRow(next, rel))
+    }
+  }
+
+  const needVersion = from !== SCHEMA_VERSION
+  if (!dryRun && (changed.length || needVersion)) {
+    writeAtomic(join(root, 'VAULT.md'), renderMeta(meta.intro ?? '灵感素材库'))
+    if (changed.length) rebuildIndex(root)
+  }
+  return { ok: pending.length === 0, from, to: SCHEMA_VERSION, changed, pending, dryRun, needVersion }
+}
+
+// 身份证正文只有两行有用信息，重构一份比字符串替换稳。
+function renderMeta(intro) {
+  return `# 素材库身份证\n\n版本：${SCHEMA_VERSION}\n简介：${intro}\n`
+}
+
 // —— 库定位（F-06）：给了 --vault 直用；否则从当前目录逐级向上找含 VAULT.md 的目录；
 // 都没有则回报「未找到」，不自动建库——建库是 init 的事，定位只管找。
 export function detectVault({ vault, cwd = process.cwd() } = {}) {
@@ -263,6 +334,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   init              建库：写身份证、索引表头与四个桶目录（F-09）
   check             校验库：身份证、索引、卡三方对账（逐列比）
   index rebuild     从卡重算整个索引；坏卡跳过并单独报
+  upgrade           把老库升到当前格式：补缺失字段，已删字段挪进「历史字段」
   index add         只把一张卡补进索引，不重扫全库
   write             按 JSON 写一张卡，顺带修好索引
 
@@ -271,13 +343,13 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --intro <一行>    init 时写进身份证的简介
   --card <路径>     write 的卡内容 JSON 文件，- 表示从标准输入读
   --path <相对路径> index add 要补进索引的卡
-  --dry-run         index rebuild 只报数不落盘
+  --dry-run         index rebuild 与 upgrade 只报清单，不落盘
   --json            输出单个 JSON 对象
   --help, -h        显示本说明`
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
 const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade'])
 
 export function parseCliArgs(argv) {
   const options = { cmd: '', action: '', json: false, help: false, dryRun: false }
@@ -387,6 +459,29 @@ export function runCli(argv, io = {}) {
     }
     err(`index 需要动作：rebuild 或 add。\n${USAGE}`)
     return 2
+  }
+
+  if (options.cmd === 'upgrade') {
+    const result = upgradeVault(root, { dryRun: options.dryRun })
+    if (result.issues?.length) {
+      emit({ ok: false, errors: result.issues.map((m) => ({ message: m })), data: {} }, result.issues.join('\n'))
+      return 1
+    }
+    const head = result.dryRun
+      ? `将升级 ${result.changed.length} 张卡（版本 ${result.from} → ${result.to}），未落盘`
+      : result.changed.length
+        ? `已升级 ${result.changed.length} 张卡（版本 ${result.from} → ${result.to}）`
+        : `没有要升级的卡（版本 ${result.from}）`
+    const list = result.changed.map((c) => `- ${c.rel}：${c.filled.join('；')}`).join('\n')
+    const pending = result.pending.length
+      ? `\n\n以下字段机器补不出，已填「待补」，请回来补：\n${result.pending.map((p) => `- ${p.rel}：${p.field}`).join('\n')}`
+      : ''
+    emit(
+      { ok: result.pending.length === 0, errors: result.pending.map((p) => ({ file: p.rel, message: `${p.field}=待补` })), data: { from: result.from, to: result.to, changed: result.changed.length, dryRun: result.dryRun } },
+      [head, list].filter(Boolean).join('\n') + pending,
+    )
+    // 有待补字段时退出码 1：升级完成了，但库还没干净，不能让调用方以为全好了。
+    return result.pending.length ? 1 : 0
   }
 
   if (options.cmd === 'check') {
