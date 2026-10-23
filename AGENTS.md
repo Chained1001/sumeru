@@ -23,6 +23,7 @@
 | 路径 | 性质 | 说明 |
 |---|---|---|
 | `skills/` | 交付 | 唯一发布内容 |
+| `docs/产品/` | 留存 | 产品需求（PRD），随仓库分发 |
 | `templates/` | 留存 | 派生后必留，`scripts/init-skill.mjs` 运行时读取 |
 | `docs/规范/` | 留存 | 标准副本，只读；改上游后重新复制 |
 | `scripts/`、`test/`、`evals/` | 开发 | 只服务本仓库 |
@@ -39,6 +40,7 @@
 | 技能清单与用途 | `README.md` 的「技能列表」节 |
 | 当前版本号 | `package.json` 的 `version` |
 | 变更历史 | `CHANGELOG.md` |
+| 产品定义与验收 | `docs/产品/PRD.md` |
 | 规则 | `docs/规范/` |
 
 ## 改动同步
@@ -47,6 +49,8 @@
 |---|---|
 | 技能增删或改名 | `README.md` 的「技能列表」节 |
 | `package.json` 的 `version` | `CHANGELOG.md` 的版本段 |
+| 产品行为变更（交互、口径、功能增减） | `docs/产品/PRD.md` 对应节 |
+| PRD 内容变更 | PRD「变更记录」表加行并递增其版本 |
 | 类型注册表增删类型族或子类 | 该技能各 `agents/` 采集维度、`evals/cases/` 用例与 `SKILL.md` 入口菜单说明同步核对 |
 | 权威源分级清单变动 | 调研员任务书、判据 J-09/J-10 与 `evals/cases/` 用例同步核对 |
 
