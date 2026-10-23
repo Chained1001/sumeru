@@ -3,7 +3,8 @@
 // 字段与取值的事实源是 cardFormat.mjs，本文件只管「怎么读写库」与「校验怎么汇总」。
 // 调用方不再需要知道「读卡 → 拼索引行 → 追加索引 → 再校验」这个顺序：writeCard 一次做完。
 // 用法：node scripts/vault.mjs <子命令> [选项]，子命令与选项见 --help。
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, dirname, relative, sep, basename, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, FIELD_NAMES, BUCKETS, defaultPrivate } from './cardFormat.mjs'
@@ -446,7 +447,117 @@ function rebuildIndex(root, { dryRun = false } = {}) {
   return { rows, skipped, dryRun }
 }
 
-// —— 接口四：把一张卡补进索引（F-09）。等价于只对这卡重算一行，不重扫全库。
+// —— 收编进度（F-22）：大文件夹分几次采时，把「采到哪了」记在库内，下次接着采。
+// 为什么进度文件放库内（<库根>/.收编进度/<源指纹>.json）而不是 辅助内容/：
+// 本技能的所有写入都受「不写库根之外」约束，进度丢到库外就绕过了那条线；
+// 而且库被拷进写书项目时，进度跟着走才不会在另一台机器上从头再来。
+// 为什么用「源指纹」命名而不是用户给的目录名：同一批素材从不同路径指过来
+// （相对路径、绝对路径、软链）应当认成同一份进度，靠路径字符串做不到。
+export const PROGRESS_DIR = '.收编进度'
+
+// 源指纹：目录绝对路径的最后一段 + 文件清单的哈希。只看路径不够——同一个
+// 路径下内容换了，进度就不该复用；只看内容也不够——两份内容相同的目录是两件活。
+function sourceFingerprint(sourceDir) {
+  const files = listSourceFiles(sourceDir)
+  const hash = createHash('sha256')
+  hash.update(basename(sourceDir).toLowerCase())
+  for (const f of files) hash.update(`\u0000${f}`)
+  return { fingerprint: hash.digest('hex').slice(0, 12), files }
+}
+
+// 待采清单：只收可读的文本文件。图片与音视频不在此处理（交回入口走多格式判定），
+// 但**列进来是有意的**——否则用户会以为它们被静默漏掉了。
+const TEXT_EXT = /\.(?:md|markdown|txt|text)$/i
+const MEDIA_EXT = /\.(?:png|jpe?g|gif|webp|bmp|svg|mp3|wav|m4a|aac|flac|mp4|mov|avi|mkv|pdf|docx?|xlsx?|pptx?)$/i
+
+function listSourceFiles(sourceDir) {
+  const out = []
+  const walk = (dir, depth) => {
+    // 深目录很少见，深过 8 层多半是误指了一个根目录（比如整个用户目录）。
+    if (depth > 8) return
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      // 隐藏目录一律跳过：.git、.收编进度 这类不是素材。
+      if (entry.name.startsWith('.')) continue
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) walk(full, depth + 1)
+      else if (entry.isFile()) out.push(relative(sourceDir, full).split(sep).join('/'))
+    }
+  }
+  walk(sourceDir, 0)
+  return out.sort()
+}
+
+export function planCollection(sourceDir) {
+  const checked = sourceFingerprint(sourceDir)
+  const texts = checked.files.filter((f) => TEXT_EXT.test(f))
+  const media = checked.files.filter((f) => MEDIA_EXT.test(f))
+  const other = checked.files.filter((f) => !TEXT_EXT.test(f) && !MEDIA_EXT.test(f))
+  return {
+    fingerprint: checked.fingerprint,
+    total: texts.length,
+    texts,
+    // 认不出扩展名的也归到这里，交给使用者判断，不替他们丢。
+    others: [...media, ...other],
+  }
+}
+
+function progressPath(root, fingerprint) {
+  return join(root, PROGRESS_DIR, `${fingerprint}.json`)
+}
+
+export function readProgress(root, fingerprint) {
+  const file = progressPath(root, fingerprint)
+  if (!existsSync(file)) return { exists: false, done: [], source: '', updatedAt: '' }
+  try {
+    const data = JSON.parse(readFileSync(file, 'utf8'))
+    return {
+      exists: true,
+      done: Array.isArray(data.done) ? data.done : [],
+      source: data.source ?? '',
+      updatedAt: data.updatedAt ?? '',
+    }
+  } catch {
+    // 进度文件坏了不该让整件事卡死：当作没采过，重采一遍比报错更合算。
+    return { exists: false, done: [], source: '', updatedAt: '', corrupt: true }
+  }
+}
+
+function writeProgress(root, fingerprint, { done, source }) {
+  const dir = join(root, PROGRESS_DIR)
+  mkdirSync(dir, { recursive: true })
+  const data = {
+    fingerprint,
+    source,
+    done: [...new Set(done)].sort(),
+    updatedAt: new Date().toISOString(),
+  }
+  writeAtomic(progressPath(root, fingerprint), `${JSON.stringify(data, null, 2)}\n`)
+}
+
+// 采集进度：把本批采完的相对路径并进进度文件。已采过的文件不会重采——
+// 这正是 F-22 的「不重」；下次从 plan 里减去 done 就是「不漏」。
+export function markProgress(root, { source, fingerprint, done } = {}) {
+  if (!fingerprint) return { ok: false, issues: ['缺 --fingerprint：先用 collect plan 查出这批素材的指纹'] }
+  if (!Array.isArray(done) || done.length === 0) return { ok: false, issues: ['缺 --done：本批采完了哪些文件（相对源目录的路径，逗号分隔）'] }
+  const plan = planCollection(source)
+  const names = new Set(plan.texts)
+  const unknown = done.filter((d) => !names.has(d))
+  if (unknown.length) {
+    return { ok: false, issues: [`这些路径不在待采清单里：${unknown.join('、')}——进度只记可采的文本文件，别把图片或别的路径写进来`] }
+  }
+  const before = readProgress(root, fingerprint)
+  const merged = [...before.done, ...done]
+  writeProgress(root, fingerprint, { done: merged, source })
+  const remaining = plan.texts.filter((t) => !merged.includes(t))
+  return { ok: true, issues: [], done: [...new Set(merged)].sort(), remaining, total: plan.total }
+}
+
 function indexCard(root, rel) {
   if (!existsSync(join(root, rel))) return { ok: false, issues: [`卡不存在：${rel}`] }
   const card = readCard(join(root, rel))
@@ -605,6 +716,8 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   card merge        把 --from 的补充记录与关联卡并进 --into，原卡进 已删卡片/
   card move         改桶与类型族两行并移到新目录；新路径已存在则拒绝
   find              查重：按桶、类型族、子类、关键词收窄索引，命中才比对（F-19）
+  collect plan      清点来源目录：列出可采的文本文件与不采的其他文件，给源指纹（F-22）
+  collect mark      把本批采完的文件记进进度，并报还剩多少（F-22）
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
@@ -620,13 +733,16 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --family <类型族> card move 挪到哪个类型族；find 按类型族收窄
   --sub <子类>      find 按子类收窄（含即命中）
   --keyword <文本>  find 按关键词收窄，比对卡名与要点（含即命中）
+  --source <目录>   collect 的素材来源目录
+  --fingerprint <值> collect mark 的源指纹，由 collect plan 给出
+  --done <路径列表> collect mark 本批采完了哪些（相对源目录，逗号分隔）
   --dry-run         index rebuild 与 upgrade 只报清单，不落盘
   --json            输出单个 JSON 对象
   --help, -h        显示本说明`
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
-const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find'])
+const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
 export const CARD_ACTION_FLAGS = {
@@ -686,6 +802,14 @@ export function runCli(argv, io = {}) {
     return 2
   }
 
+  // collect 的动作名同样先验：action 拼错时，plan 与 mark 两条分支都不进，
+  // 会一路走到「未找到库」或静默成功，两种都不好查。
+  if (options.cmd === 'collect' && !['plan', 'mark'].includes(options.action)) {
+    const message = `collect 需要动作：plan（清点来源）或 mark（记进度）；给的是「${options.action}」`
+    emit({ ok: false, error: message, data: { action: options.action } }, message)
+    return 2
+  }
+
   // card 的动作名与必填参数也在碰库之前验完：没给库的机器上，
   // 「card 缺 --path」该报参数错误（2），不该先报「未找到库」（1）。
   if (options.cmd === 'card') {
@@ -723,6 +847,29 @@ export function runCli(argv, io = {}) {
       return 1
     }
     emit({ ok: true, data: { root } }, `已建库：${root}`)
+    return 0
+  }
+
+  // collect plan 只读来源目录、不碰库，故放在「未找到库」拦截之前：
+  // 先清点再建库是正常顺序，不该因为库还没建就报「未找到库」。
+  if (options.cmd === 'collect' && options.action === 'plan') {
+    if (!options.source) {
+      emit({ ok: false, error: 'collect plan 需要 --source <目录>', data: {} }, 'collect plan 需要 --source <目录>')
+      return 2
+    }
+    if (!existsSync(options.source) || !statSync(options.source).isDirectory()) {
+      emit({ ok: false, error: `来源目录不存在或不是目录：${options.source}`, data: {} }, `来源目录不存在或不是目录：${options.source}`)
+      return 1
+    }
+    const plan = planCollection(options.source)
+    const head = `共 ${plan.total} 个可采的文本文件${plan.others.length ? `，另有 ${plan.others.length} 个不采（图片、音视频、认不出类型）` : ''}｜源指纹 ${plan.fingerprint}`
+    const list = plan.texts.slice(0, 20).map((f, i) => `${i + 1}. ${f}`).join('\n')
+    const more = plan.total > 20 ? `\n… 还有 ${plan.total - 20} 个未列出` : ''
+    const others = plan.others.length ? `\n\n不采的文件（要收请先转成文字）：\n${plan.others.map((f) => `- ${f}`).join('\n')}` : ''
+    emit(
+      { ok: true, errors: [], data: { fingerprint: plan.fingerprint, total: plan.total, texts: plan.texts, others: plan.others } },
+      [head, list].filter(Boolean).join('\n') + more + others,
+    )
     return 0
   }
 
@@ -786,6 +933,34 @@ export function runCli(argv, io = {}) {
     )
     // 有待补字段时退出码 1：升级完成了，但库还没干净，不能让调用方以为全好了。
     return result.pending.length ? 1 : 0
+  }
+
+  if (options.cmd === 'collect' && options.action === 'mark') {
+    if (!options.source) {
+      emit({ ok: false, error: 'collect mark 需要 --source <目录>', data: {} }, 'collect mark 需要 --source <目录>')
+      return 2
+    }
+    if (!existsSync(options.source) || !statSync(options.source).isDirectory()) {
+      emit({ ok: false, error: `来源目录不存在或不是目录：${options.source}`, data: {} }, `来源目录不存在或不是目录：${options.source}`)
+      return 1
+    }
+    // --done 传进来的是逗号分隔的相对路径。空串视为参数错误：
+    // 「这批一个都没采」不该被记成一次进度，那会把剩余数算错。
+    const done = String(options.done ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const result = markProgress(root, { source: options.source, fingerprint: options.fingerprint, done })
+    if (!result.ok) {
+      emit({ ok: false, error: result.issues.join('；'), data: {} }, result.issues.join('\n'))
+      return 2
+    }
+    const head = `已记 ${result.done.length}／${result.total}，剩 ${result.remaining.length} 个待采`
+    const next = result.remaining.length
+      ? `\n下次从这些接着采：\n${result.remaining.slice(0, 10).map((f) => `- ${f}`).join('\n')}${result.remaining.length > 10 ? `\n… 还有 ${result.remaining.length - 10} 个` : ''}`
+      : '\n全部采完了，跑一次 check 复核库。'
+    emit({ ok: true, errors: [], data: { done: result.done.length, remaining: result.remaining, total: result.total } }, head + next)
+    return 0
   }
 
   if (options.cmd === 'find') {

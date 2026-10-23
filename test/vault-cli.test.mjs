@@ -808,6 +808,112 @@ test('find 只读索引不写库：跑完库内容一字不变', () => {
   assert.equal(readFileSync(join(root, 'INDEX.md'), 'utf8'), before, 'find 不该改索引')
 })
 
+// —— 分批断点续采（F-22）：进度记在库内，靠指纹认同一份活，靠去重保证不重。
+// 这三件事任何一件退化，用户都会在第二次续采时发现自己白采了一遍或漏了一批。
+function sourceDir(files) {
+  const dir = tmp()
+  mkdirSync(join(dir, 'sub'), { recursive: true })
+  for (const f of files) {
+    const full = join(dir, f)
+    mkdirSync(dirname(full), { recursive: true })
+    writeFileSync(full, '# x', 'utf8')
+  }
+  return dir
+}
+
+function fingerprintOf(src) {
+  const r = run(['collect', 'plan', '--source', src])
+  assert.equal(r.code, 0, 'collect plan 失败：' + r.stdout + r.stderr)
+  const m = /源指纹 ([0-9a-f]{12})/.exec(r.stdout)
+  assert.ok(m, 'collect plan 没给出源指纹')
+  return m[1]
+}
+
+test('collect plan 只数文本文件，并把不采的列出来而不是静默漏掉', () => {
+  const src = sourceDir(['a.md', 'sub/b.txt', 'pic.png', 'weird.abc'])
+  const r = run(['collect', 'plan', '--source', src])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /共 2 个可采/, '该只有 a.md 与 sub/b.txt')
+  assert.match(r.stdout, /pic\.png/, '图片应被列出并说明不采，否则用户以为漏了')
+  assert.match(r.stdout, /weird\.abc/, '认不出类型的也应列出')
+})
+
+test('collect plan 不碰库：没有库也能清点', () => {
+  const src = sourceDir(['a.md'])
+  const nowhere = tmp() // 空目录，没有 VAULT.md
+  const r = run(['collect', 'plan', '--source', src], nowhere)
+  assert.equal(r.code, 0, '清点来源目录不需要库，不该报「未找到库」：' + r.stdout + r.stderr)
+})
+
+test('collect mark 累加进度并报剩余，重复提交不重复计数', () => {
+  const src = sourceDir(['a1.md', 'a2.md', 'a3.md', 'a4.md'])
+  const root = tmp()
+  assert.equal(run(['init', '--vault', root]).code, 0)
+  const fp = fingerprintOf(src)
+
+  let r = run(['collect', 'mark', '--vault', root, '--source', src, '--fingerprint', fp, '--done', 'a1.md,a2.md'])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /已记 2／4/)
+
+  r = run(['collect', 'mark', '--vault', root, '--source', src, '--fingerprint', fp, '--done', 'a3.md'])
+  assert.match(r.stdout, /已记 3／4/, '续采应累加')
+
+  // 同一批再记一次：这是用户点错或重跑时最可能发生的事，不该把剩余数算成负的。
+  r = run(['collect', 'mark', '--vault', root, '--source', src, '--fingerprint', fp, '--done', 'a1.md,a2.md'])
+  assert.match(r.stdout, /已记 3／4/, '重复提交同一批不该重复计数')
+})
+
+test('collect mark 采完时报全部采完，进度文件落在库内', () => {
+  const src = sourceDir(['a1.md', 'a2.md'])
+  const root = tmp()
+  run(['init', '--vault', root])
+  const fp = fingerprintOf(src)
+  const r = run(['collect', 'mark', '--vault', root, '--source', src, '--fingerprint', fp, '--done', 'a1.md,a2.md'])
+  assert.match(r.stdout, /已记 2／2/)
+  assert.match(r.stdout, /全部采完/)
+  // 进度落在库内而非库外：本技能所有写入都不得越出库根。
+  const prog = join(root, '.收编进度', fp + '.json')
+  assert.ok(existsSync(prog), '进度文件应在 <库根>/.收编进度/ 下')
+  const data = JSON.parse(readFileSync(prog, 'utf8'))
+  assert.deepEqual(data.done, ['a1.md', 'a2.md'], 'done 应排序后存')
+})
+
+test('collect mark 拒绝把不采的文件记进进度', () => {
+  const src = sourceDir(['a.md', 'pic.png'])
+  const root = tmp()
+  run(['init', '--vault', root])
+  const fp = fingerprintOf(src)
+  const r = run(['collect', 'mark', '--vault', root, '--source', src, '--fingerprint', fp, '--done', 'pic.png'])
+  assert.equal(r.code, 2, '图片不在待采清单里，记进去会让剩余数算错')
+})
+
+test('collect mark 缺指纹或空 done 时报参数错误', () => {
+  const src = sourceDir(['a.md'])
+  const root = tmp()
+  run(['init', '--vault', root])
+  const fp = fingerprintOf(src)
+  assert.equal(run(['collect', 'mark', '--vault', root, '--source', src, '--done', 'a.md']).code, 2, '缺指纹应为 2')
+  assert.equal(run(['collect', 'mark', '--vault', root, '--source', src, '--fingerprint', fp, '--done', '']).code, 2, '空 done 应为 2')
+})
+
+test('collect 动作名拼错时报参数错误，不静默成功', () => {
+  const src = sourceDir(['a.md'])
+  const r = run(['collect', 'bogus', '--source', src])
+  assert.equal(r.code, 2)
+  assert.match(r.stdout + r.stderr, /plan|mark/)
+})
+
+test('源指纹对同一目录稳定：尾斜杠不影响', () => {
+  const src = sourceDir(['a.md', 'b.md'])
+  assert.equal(fingerprintOf(src), fingerprintOf(src + '/'), '同一目录换个写法该认成同一份活')
+})
+
+test('源指纹区分内容不同的目录', () => {
+  const one = sourceDir(['a.md'])
+  const two = sourceDir(['b.md'])
+  assert.notEqual(fingerprintOf(one), fingerprintOf(two), '内容不同不该共用进度')
+})
+
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
