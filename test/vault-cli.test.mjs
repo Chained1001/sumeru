@@ -697,6 +697,92 @@ test('没有一个子命令会调 process.exit：脚本作为模块被 import �
   assert.equal(calls.length, 0, 'vault.mjs 又出现 process.exit，会杀掉宿主进程；请改为返回退出码')
 })
 
+// —— 查重（F-19）：先收窄再比对。这组钉的是「不收窄就拒绝」与四级收窄的行为边界。
+const FIND_CARDS = [
+  { rel: '写作方法/技巧/卡-20261024-关系造梗.md', 卡名: '关系造梗', 桶: '写作方法', 类型族: 'S-06 技巧', 子类: '人物塑造', 要点: '梗依托人际关系生成，笑点交互繁殖' },
+  { rel: '写作方法/技巧/卡-20261024-三章钩子.md', 卡名: '三章一个钩子', 桶: '写作方法', 类型族: 'S-06 技巧', 子类: '节奏控制', 要点: '每三章必留一个未解之谜' },
+  { rel: '现实避坑/现实/卡-20261024-尸表检验.md', 卡名: '尸表检验', 桶: '现实避坑', 类型族: 'S-09 现实', 子类: '职业细节', 要点: '明清验尸停留在尸表检验层面' },
+]
+
+function vaultWithCards() {
+  const root = tmp()
+  assert.equal(run(['init', '--vault', root]).code, 0)
+  for (const c of FIND_CARDS) {
+    const r = writeCardViaCli(root, {
+      relPath: c.rel,
+      basic: { 卡名: c.卡名, 桶: c.桶, 类型族: c.类型族, 子类: c.子类, 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-24', 时效状态: '长期', 要点: c.要点 },
+      dimension: {},
+      body: { 内容: '测试' },
+    })
+    assert.equal(r.code, 0, '建测试卡失败：' + r.stdout + r.stderr)
+  }
+  return root
+}
+
+test('find 不给任何筛选项时拒绝并退出 2：不许整表翻', () => {
+  const root = vaultWithCards()
+  const r = run(['find', '--vault', root])
+  assert.equal(r.code, 2, '不给筛选项应报参数错误')
+  assert.match(r.stdout + r.stderr, /查重至少要给一个筛选项/)
+})
+
+test('find 按桶收窄只返回该桶的卡', () => {
+  const root = vaultWithCards()
+  const r = run(['find', '--vault', root, '--bucket', '写作方法'])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /命中 2 张/)
+  assert.ok(!r.stdout.includes('尸表检验'), '现实避坑的卡不该出现在写作方法的结果里')
+})
+
+test('find 逐级收窄：桶加子类只剩一张', () => {
+  const root = vaultWithCards()
+  const r = run(['find', '--vault', root, '--bucket', '写作方法', '--sub', '人物塑造'])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /命中 1 张/)
+  assert.match(r.stdout, /关系造梗/)
+})
+
+test('find 关键词比对卡名与要点两列', () => {
+  const root = vaultWithCards()
+  const byPoint = run(['find', '--vault', root, '--keyword', '未解之谜'])
+  assert.equal(byPoint.code, 0)
+  assert.match(byPoint.stdout, /三章一个钩子/, '关键词落在要点里也应命中')
+  const byName = run(['find', '--vault', root, '--keyword', '尸表'])
+  assert.match(byName.stdout, /尸表检验/, '关键词落在卡名里也应命中')
+})
+
+test('find 查无结果不是错误：退出 0 并说明可能筛太窄', () => {
+  const root = vaultWithCards()
+  const r = run(['find', '--vault', root, '--keyword', '库里一定没有的词'])
+  assert.equal(r.code, 0, '查无是正常结论，不该报错')
+  assert.match(r.stdout, /没有命中/)
+  assert.match(r.stdout, /放宽/, '应提示可能筛得太窄，否则用户会以为库里真的没有')
+})
+
+test('find 桶名拼错时退出 2，不静默返回 0 结果', () => {
+  const root = vaultWithCards()
+  const r = run(['find', '--vault', root, '--bucket', '积木'])
+  assert.equal(r.code, 2, '拼错桶名若返回 0 行，会被误读成库里没有')
+  assert.match(r.stdout + r.stderr, /只认四个桶/)
+})
+
+test('find 的 --json 给出 count 与 rows', () => {
+  const root = vaultWithCards()
+  const r = run(['find', '--vault', root, '--bucket', '写作方法', '--json'])
+  assert.equal(r.code, 0)
+  const payload = JSON.parse(r.stdout)
+  assert.equal(payload.ok, true)
+  assert.equal(payload.data.count, 2)
+  assert.equal(payload.data.rows.length, 2)
+})
+
+test('find 只读索引不写库：跑完库内容一字不变', () => {
+  const root = vaultWithCards()
+  const before = readFileSync(join(root, 'INDEX.md'), 'utf8')
+  run(['find', '--vault', root, '--keyword', '梗'])
+  assert.equal(readFileSync(join(root, 'INDEX.md'), 'utf8'), before, 'find 不该改索引')
+})
+
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })

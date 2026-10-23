@@ -456,6 +456,42 @@ function indexCard(root, rel) {
   return { ok: true, issues: [] }
 }
 
+// —— 查重（F-19）：先按桶、类型族、子类、关键词四级收窄索引，命中才打开卡比对要点。
+// 库上千张卡时整表翻一遍既慢又看不出「像不像」，收窄后再比对才有意义。
+// 一个筛选项都不给时直接拒绝：那等于整表翻，而整表翻正是 F-19 要消掉的做法。
+// 关键词比对索引里的「要点」与「卡名」两列，够用来判断「库里有没有这个对象」；
+// 要判「内容是否重复」还得打开卡读正文，那一步交给调用方（流程文件里是采集流程第 4 步）。
+const FIND_FILTERS = ['bucket', 'family', 'sub', 'keyword']
+
+function matchesText(haystack, needle) {
+  return String(haystack ?? '').toLowerCase().includes(String(needle).toLowerCase())
+}
+
+export function findCards(root, { bucket, family, sub, keyword } = {}) {
+  const filters = { bucket, family, sub, keyword }
+  const used = FIND_FILTERS.filter((k) => filters[k] !== undefined && String(filters[k]).trim() !== '')
+  if (used.length === 0) {
+    return {
+      ok: false,
+      issues: [`查重至少要给一个筛选项（${FIND_FILTERS.map((k) => `--${k}`).join('、')}）：不给就成整表翻，库大了翻不动`],
+      rows: [],
+    }
+  }
+  // 桶名与类型族名先验：拼错时返回 0 行会被误读成「库里没有」，其实只是名字写错了。
+  if (bucket !== undefined && bucket !== '' && !BUCKETS.includes(bucket)) {
+    return { ok: false, issues: [`--bucket 只认四个桶：${BUCKETS.join('、')}；给的是「${bucket}」`], rows: [] }
+  }
+
+  let rows = readIndex(root)
+  // 逐级收窄：桶 → 类型族 → 子类 → 关键词。每级都在上一级的结果里筛，不重读索引。
+  if (bucket) rows = rows.filter((r) => r.桶 === bucket)
+  if (family) rows = rows.filter((r) => matchesText(r.类型族, family))
+  if (sub) rows = rows.filter((r) => matchesText(r.子类, sub))
+  if (keyword) rows = rows.filter((r) => matchesText(r.要点, keyword) || matchesText(r.卡名, keyword))
+
+  return { ok: true, issues: [], rows, narrowed: used }
+}
+
 // —— 接口五：把老库升到当前格式（F-10）。跨多个版本一次做完。
 // 只补不丢：机器补得出的字段补上，补不出的填「待补」并列进清单；
 // 卡上已不在契约里的字段挪进「历史字段」行，不直接抹掉。
@@ -568,6 +604,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   card restore      把 已删卡片/ 里的卡移回原路径并补回索引；原位置被占则拒绝
   card merge        把 --from 的补充记录与关联卡并进 --into，原卡进 已删卡片/
   card move         改桶与类型族两行并移到新目录；新路径已存在则拒绝
+  find              查重：按桶、类型族、子类、关键词收窄索引，命中才比对（F-19）
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
@@ -579,15 +616,17 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --section <节名>  card edit 改哪一节：基本信息（默认）、类型维度、正文
   --from <相对路径> card merge 被并入的卡
   --into <相对路径> card merge 的目标卡
-  --bucket <桶>     card move 挪到哪个桶
-  --family <类型族> card move 挪到哪个类型族
+  --bucket <桶>     card move 挪到哪个桶；find 按桶收窄
+  --family <类型族> card move 挪到哪个类型族；find 按类型族收窄
+  --sub <子类>      find 按子类收窄（含即命中）
+  --keyword <文本>  find 按关键词收窄，比对卡名与要点（含即命中）
   --dry-run         index rebuild 与 upgrade 只报清单，不落盘
   --json            输出单个 JSON 对象
   --help, -h        显示本说明`
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
-const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card'])
+const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
 export const CARD_ACTION_FLAGS = {
@@ -747,6 +786,23 @@ export function runCli(argv, io = {}) {
     )
     // 有待补字段时退出码 1：升级完成了，但库还没干净，不能让调用方以为全好了。
     return result.pending.length ? 1 : 0
+  }
+
+  if (options.cmd === 'find') {
+    const result = findCards(root, { bucket: options.bucket, family: options.family, sub: options.sub, keyword: options.keyword })
+    if (!result.ok) {
+      emit({ ok: false, error: result.issues.join('；'), data: {} }, result.issues.join('\n'))
+      return 2
+    }
+    const head = result.rows.length
+      ? `命中 ${result.rows.length} 张（收窄条件：${result.narrowed.join('、')}）`
+      : `没有命中（收窄条件：${result.narrowed.join('、')}）——库里可能确实没有，也可能筛得太窄，可放宽再试`
+    const list = result.rows
+      .map((r) => `- ${r.卡名}\n  ${r.桶} / ${r.类型族} / ${r.子类}；要点：${r.要点}\n  ${r.相对路径}`)
+      .join('\n')
+    // 查重结果为空不是失败：库里没有这张卡是正常结论，退出码仍是 0。
+    emit({ ok: true, errors: [], data: { count: result.rows.length, narrowed: result.narrowed, rows: result.rows } }, [head, list].filter(Boolean).join('\n'))
+    return 0
   }
 
   if (options.cmd === 'check') {
