@@ -914,6 +914,30 @@ test('源指纹区分内容不同的目录', () => {
   assert.notEqual(fingerprintOf(one), fingerprintOf(two), '内容不同不该共用进度')
 })
 
+// —— 多格式输入（F-18）：钉住「四种形态各有出路」与「做不到就说做不到」。
+// 这条最容易退化成「假装读懂」——模型看到一张图就开始编内容，用户不会察觉。
+test('01 采集有四形态分派：文字、图片、链接、语音各走各的', () => {
+  const text = workflow('01-采集.md')
+  for (const kind of ['文字', '图', '链接', '语音']) {
+    assert.ok(text.includes(kind), `第 0 步没写「${kind}」这类形态`)
+  }
+  assert.match(text, /第 0 步/, '缺第 0 步的素材形态判定')
+})
+
+test('01 采集在宿主做不到时直说，不猜内容', () => {
+  const text = workflow('01-采集.md')
+  assert.match(text, /做不到/, '没写「做不到就直说」这句')
+  assert.match(text, /不猜|不臆测|不虚构/, '没写「不猜内容」，模型会自己补')
+  // 「拿标题摘要凑卡」是这条最容易走偏的地方：抓不到正文时用摘要交差。
+  assert.match(text, /不.*凑一张卡|不用标题和摘要/, '没写不许拿标题摘要凑卡')
+})
+
+test('SKILL 的停止条件认多格式：读不了就说，不再笼统写「含未数字化的图片语音」', () => {
+  const text = readFileSync(join(base, 'skills', 'material-vault', 'SKILL.md'), 'utf8')
+  assert.match(text, /做不到/, '停止条件没写「做不到」，遇到读不了的形态会含糊过去')
+  assert.ok(!/含未数字化的图片、语音时，停止并询问用户/.test(text), '0.5.0 起能读图与语音，旧口径该换掉')
+})
+
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
