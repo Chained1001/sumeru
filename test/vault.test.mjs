@@ -139,19 +139,22 @@ test('卡上多余的字段（历史字段）不会在重写时丢失', () => {
   assert.match(text, /再改一次/)
 })
 
+// 这条是唯一走子进程的用例，且刻意保留：runCli 返回退出码这件事由 vault-cli.test.mjs
+// 直测，但「main 真的把那个码交给了进程」只有起进程才验得到。
 cliTest('CLI：好库退出码 0，坏库退出码 1', () => {
   const good = makeLib()
   const bad = makeLib()
   writeCard(good, card(), REL)
-  const run = (root) => spawnSync(process.execPath, [join(base, 'skills', 'material-vault', 'scripts', 'vault.mjs'), 'check', root], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  const run = (root) => spawnSync(process.execPath, [join(base, 'skills', 'material-vault', 'scripts', 'vault.mjs'), 'check', '--vault', root], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 
   const ok = run(good)
   assert.equal(ok.status, 0, `好库应退出码 0，实际 ${ok.status}：${ok.stdout}${ok.stderr}`)
   assert.match(ok.stdout, /库校验通过/)
 
+  // 坏库缺 INDEX.md：空索引本身合法（init 刚建出来就该没有卡），缺文件才是错。
   const fail = run(bad)
-  assert.equal(fail.status, 1, `空库应退出码 1，实际 ${fail.status}`)
-  assert.match(fail.stderr, /索引为空/)
+  assert.equal(fail.status, 1, `缺索引的库应退出码 1，实际 ${fail.status}`)
+  assert.match(fail.stdout, /缺 INDEX\.md/)
 })
 
 after(() => {

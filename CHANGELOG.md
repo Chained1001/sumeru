@@ -9,11 +9,16 @@
 - `skills/material-vault/scripts/cardFormat.mjs` 卡格式契约：字段表（含必填与限长）、索引列、四个枚举、`defaultPrivate` 与 `checkBasic`，是卡格式的唯一事实源
 - 卡新增「私有」字段（判据 J-13）：取值是／否，故事零件·开书点子默认「是」，其余默认「否」；本版暂不必填，批三随升级器转必填
 - `test/cardFormat.test.mjs` 十条：契约与 `素材卡版式.md` 逐项一致、必填集合、私有默认值、枚举口径、索引列是字段子集、要点按字符计长（含星形平面外字符）
-- `docs/技术/技术文档.md`：分层、运行时视图、横切关注点、架构决策（D-01 至 D-12）、质量属性与六条风险
+- `docs/技术/技术文档.md`：分层、运行时视图、横切关注点、架构决策（D-01 至 D-14）、质量属性与六条风险
 - 根 `GLOSSARY.md`：登记十一个项目特有术语
 
 ### Changed
 
+- `vault.mjs` 改成子命令：`detect`（三层定位）、`init`（一次写齐身份证、索引表头与四个桶目录）、`check`、`write`（读卡 JSON，落卡并同步修索引）；全局选项 `--vault`、`--json`、`--help`
+- `vault.mjs` 的 `runCli` 接可注入 io 并返回退出码，不再调 `process.exit`；`test/vault-cli.test.mjs` 十四条直接穿这个接口，在禁止子进程管道的环境里也能跑（此前这类用例只能整组跳过）
+- 退出码统一为 0 成功、1 业务失败、2 参数错误、3 环境缺失；`--json` 在参数错误时也输出同一形状的对象
+- 子命令名在触碰库状态之前校验：此前未知子命令会先撞上「未找到库」，把参数错误报成业务失败
+- `check` 不再把空索引当错误：`init` 刚建出来的库本来就该一张卡也没有，只有缺 `INDEX.md` 才算错
 - `vault.mjs` 的 interface 收到两个：`writeCard`（合并→补默认值→校验→落卡→修索引）与 `checkVault`（身份证、索引、卡、"卡未进索引"四项一致性）；`readCard`／`appendIndex`／`indexRowFor`／`checkCard` 退进 implementation，调用方不再需要知道写入顺序
 - `writeCard` 改为合并写入而非整卡覆盖：盘上已有、本次未传的字段（如升级器写进「历史字段」的老值）原样保留
 - 写卡与索引改为先落临时文件再 `rename`，中断不留半截卡；索引按相对路径 upsert，重复写同一张卡不再产生两行

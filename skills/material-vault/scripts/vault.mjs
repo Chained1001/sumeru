@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// 库接口（vault）：素材库的两个动作——写一张卡、查一个库。
+// 库接口（vault）：素材库的四件事——找库、建库、写一张卡、查一个库。
 // 字段与取值的事实源是 cardFormat.mjs，本文件只管「怎么读写库」与「校验怎么汇总」。
 // 调用方不再需要知道「读卡 → 拼索引行 → 追加索引 → 再校验」这个顺序：writeCard 一次做完。
-// 用法：node scripts/vault.mjs check <库根>
+// 用法：node scripts/vault.mjs <子命令> [选项]，子命令与选项见 --help。
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, rmSync } from 'node:fs'
 import { join, dirname, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, defaultPrivate } from './cardFormat.mjs'
+import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, BUCKETS, defaultPrivate } from './cardFormat.mjs'
 
 export { FIELDS, INDEX_COLUMNS, defaultPrivate, checkBasic }
 export const SCHEMA_VERSION = 1
@@ -146,8 +146,9 @@ export function checkVault(root) {
   if (!meta.exists) issues.push('缺 VAULT.md 身份证')
   else if (meta.version !== SCHEMA_VERSION) issues.push(`身份证版本 ${meta.version} ≠ 当前 ${SCHEMA_VERSION}，须先升级`)
 
+  // 缺 INDEX.md 是错，空索引不是错：init 刚建出来的库就该一张卡也没有（F-09）。
+  if (!existsSync(join(root, 'INDEX.md'))) issues.push('缺 INDEX.md')
   const rows = readIndex(root)
-  if (rows.length === 0) issues.push('索引为空或不存在')
   const indexed = new Set()
   for (const row of rows) {
     const file = join(root, row.相对路径)
@@ -183,25 +184,168 @@ function listCards(root) {
   return out
 }
 
-// —— CLI（批一换成子命令；本轮保持 check <库根>）
+// —— 库定位（F-06）：给了 --vault 直用；否则从当前目录逐级向上找含 VAULT.md 的目录；
+// 都没有则回报「未找到」，不自动建库——建库是 init 的事，定位只管找。
+export function detectVault({ vault, cwd = process.cwd() } = {}) {
+  if (vault) return { kind: '指定', root: vault }
+  let dir = cwd
+  for (;;) {
+    if (existsSync(join(dir, 'VAULT.md'))) return { kind: '就近', root: dir }
+    const up = dirname(dir)
+    if (up === dir) break
+    dir = up
+  }
+  return { kind: '未找到', root: null }
+}
+
+// —— 建库（F-09）：一次写齐身份证、索引表头与四个桶目录。
+export function initVault(root, { intro = '灵感素材库' } = {}) {
+  if (existsSync(join(root, 'VAULT.md'))) {
+    return { ok: false, issues: [`该目录已是素材库（已有 VAULT.md）：${root}`] }
+  }
+  writeAtomic(join(root, 'VAULT.md'), `# 素材库身份证\n\n版本：${SCHEMA_VERSION}\n简介：${intro}\n`)
+  writeAtomic(join(root, 'INDEX.md'), renderIndex([]))
+  for (const bucket of BUCKETS) mkdirSync(join(root, bucket), { recursive: true })
+  return { ok: true, issues: [] }
+}
+
+// —— CLI。io 由调用方给，返回退出码而不杀进程：测试可直接调它拿输出与码，不必起子进程。
+// 退出码：0 成功、1 业务失败、2 参数错误、3 环境缺失（与 docs/技术/技术文档.md 一致）。
+const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
+
+子命令
+  detect            找当前该用哪个库（F-06）
+  init              建库：写身份证、索引表头与四个桶目录（F-09）
+  check             校验库：身份证、索引、卡、以及卡是否都进了索引
+  write             按 JSON 写一张卡，顺带修好索引
+
+选项
+  --vault <路径>    库根；不给则按 detect 的三层判定
+  --intro <一行>    init 时写进身份证的简介
+  --card <路径>     write 的卡内容 JSON 文件，- 表示从标准输入读
+  --json            输出单个 JSON 对象
+  --help, -h        显示本说明`
+
+// 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
+const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write'])
+
+export function parseCliArgs(argv) {
+  const options = { cmd: '', json: false, help: false }
+  const positional = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--json') options.json = true
+    else if (arg === '--help' || arg === '-h') options.help = true
+    else if (FLAGS_WITH_VALUE.has(arg)) {
+      const value = argv[++i]
+      if (value === undefined || value.startsWith('--')) throw new Error(`${arg} 需要一个值。\n${USAGE}`)
+      options[arg.slice(2)] = value
+    } else if (arg.startsWith('-') && arg !== '-') throw new Error(`未知参数 ${arg}。\n${USAGE}`)
+    else positional.push(arg)
+  }
+  if (positional.length > 1) throw new Error(`多余的参数 ${positional.slice(1).join(' ')}。\n${USAGE}`)
+  options.cmd = positional[0] ?? ''
+  return options
+}
+
+export function runCli(argv, io = {}) {
+  const out = io.out ?? ((s) => process.stdout.write(`${s}\n`))
+  const err = io.err ?? ((s) => process.stderr.write(`${s}\n`))
+  const cwd = io.cwd ?? process.cwd()
+  // --json 要在解析失败时也认得出，故先从裸 argv 里探一次。
+  const wantsJson = argv.includes('--json')
+  const emit = (payload, text) => (wantsJson ? out(JSON.stringify(payload, null, 2)) : out(text))
+
+  let options
+  try {
+    options = parseCliArgs(argv)
+  } catch (error) {
+    emit({ ok: false, error: error.message, data: {} }, error.message)
+    return 2
+  }
+  if (options.help || !options.cmd) {
+    out(USAGE)
+    return options.help ? 0 : 2
+  }
+
+  // 子命令名先验，再碰任何库状态：否则未知子命令会先撞上「未找到库」，
+  // 把参数错误（2）报成业务失败（1），调用方无从区分自己拼错了命令。
+  if (!KNOWN_COMMANDS.has(options.cmd)) {
+    err(`未知子命令 ${options.cmd}。\n${USAGE}`)
+    return 2
+  }
+
+  const resolved = detectVault({ vault: options.vault, cwd })
+
+  if (options.cmd === 'detect') {
+    if (resolved.kind === '未找到') {
+      emit({ ok: false, error: '未找到库', data: { kind: '未找到' } }, '未找到库：当前目录及其上级都没有 VAULT.md，可用 init 新建')
+      return 1
+    }
+    emit({ ok: true, data: { kind: resolved.kind, root: resolved.root } }, `${resolved.kind}：${resolved.root}`)
+    return 0
+  }
+
+  if (options.cmd === 'init') {
+    const root = options.vault ?? resolved.root ?? join(cwd, '素材库')
+    const result = initVault(root, { intro: options.intro })
+    if (!result.ok) {
+      emit({ ok: false, error: result.issues.join('；'), data: { root } }, result.issues.join('\n'))
+      return 1
+    }
+    emit({ ok: true, data: { root } }, `已建库：${root}`)
+    return 0
+  }
+
+  if (resolved.kind === '未找到') {
+    emit({ ok: false, error: '未找到库', data: {} }, '未找到库：当前目录及其上级都没有 VAULT.md，可用 init 新建或加 --vault 指定')
+    return 1
+  }
+  const root = resolved.root
+
+  if (options.cmd === 'check') {
+    const issues = checkVault(root)
+    if (issues.length) {
+      emit({ ok: false, errors: issues.map((m) => ({ message: m })), data: { root } }, `库校验发现 ${issues.length} 处问题：\n${issues.map((i) => `- ${i}`).join('\n')}`)
+      return 1
+    }
+    emit({ ok: true, errors: [], data: { root, cards: readIndex(root).length } }, `库校验通过（${readIndex(root).length} 张卡，格式版本 ${SCHEMA_VERSION}）`)
+    return 0
+  }
+
+  if (options.cmd === 'write') {
+    if (!options.card) {
+      err(`write 需要 --card <JSON 路径>（- 表示从标准输入读）。\n${USAGE}`)
+      return 2
+    }
+    if (!existsSync(root)) {
+      err(`库根不存在：${root}`)
+      return 3
+    }
+    let payload
+    try {
+      const text = options.card === '-' ? readFileSync(0, 'utf8') : readFileSync(options.card, 'utf8')
+      payload = JSON.parse(text)
+    } catch (error) {
+      err(`读不出卡内容：${error.message}`)
+      return 2
+    }
+    const result = writeCard(root, payload, payload.relPath)
+    if (!result.ok) {
+      emit({ ok: false, errors: result.issues.map((m) => ({ message: m })), data: {} }, `卡未写入，${result.issues.length} 处问题：\n${result.issues.map((i) => `- ${i}`).join('\n')}`)
+      return 1
+    }
+    emit({ ok: true, errors: [], data: { relPath: result.relPath } }, `已写入：${result.relPath}`)
+    return 0
+  }
+
+  err(`未知子命令 ${options.cmd}。\n${USAGE}`)
+  return 2
+}
+
 function main() {
-  const [cmd, target] = process.argv.slice(2)
-  if (cmd !== 'check' || !target) {
-    console.error('用法：node scripts/vault.mjs check <库根>')
-    process.exit(2)
-  }
-  if (!existsSync(target)) {
-    console.error(`库根不存在：${target}`)
-    process.exit(2)
-  }
-  const issues = checkVault(target)
-  if (issues.length === 0) {
-    console.log(`库校验通过（${readIndex(target).length} 张卡，格式版本 ${SCHEMA_VERSION}）`)
-    return
-  }
-  console.error(`库校验发现 ${issues.length} 处问题：`)
-  for (const i of issues) console.error(`- ${i}`)
-  process.exit(1)
+  process.exitCode = runCli(process.argv.slice(2))
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main()
