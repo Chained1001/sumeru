@@ -416,6 +416,56 @@ export function vaultOverview(root, { thin = THIN_THRESHOLD, now = new Date() } 
     thinFamilies,
   }
 }
+
+// —— 项目视图（F-26）：给一个书名，列出「已用在」含这本书的卡。
+//
+// 不新增任何记录结构：0.6.0 的 used 已经把「《书名》第 12 章」写进了卡的
+// 「已用在」行，直接用那一行筛。另建一份引用记录能多记「查过但没用在书里」
+// 的卡，但那就多一份要维护的状态、也多一处可漂移。
+//
+// 书名的匹配去书名号、去空白后按「包含」比：用户说「长夜」要能命中
+// 「《长夜》第 3 章」，说「长夜第二部」也该能命中「《长夜第二部》第 1 章」。
+export function projectView(root, { work } = {}) {
+  const title = String(work ?? '').trim().replace(/^《|》$/g, '')
+  if (!title) return { ok: false, issues: ['缺 --work：要看哪本书用过的卡，如 长夜（书名号可省）'], rows: [] }
+
+  const rows = []
+  for (const rel of listCards(root)) {
+    const card = readCard(join(root, rel))
+    const usedIn = String(card.body.已用在 ?? '').trim()
+    if (!usedIn) continue
+    // 「已用在」里可能记着多部作品，用「；」隔开；逐条看哪几条属于这本书。
+    const hits = usedIn
+      .split('；')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .filter((entry) => entry.replace(/^《|》$/g, '').includes(title))
+    if (hits.length === 0) continue
+    rows.push({
+      卡名: card.basic.卡名 ?? '',
+      桶: card.basic.桶 ?? '',
+      类型族: card.basic.类型族 ?? '',
+      子类: card.basic.子类 ?? '',
+      要点: card.basic.要点 ?? '',
+      用在哪: hits.join('；'),
+      相对路径: rel,
+    })
+  }
+
+  // 按桶再按族排：看「这本书用过的卡都集中在哪类素材」时，顺序稳定比命中顺序有用。
+  rows.sort((a, b) => a.桶.localeCompare(b.桶) || a.类型族.localeCompare(b.类型族) || a.相对路径.localeCompare(b.相对路径))
+
+  const byBucket = new Map()
+  for (const r of rows) byBucket.set(r.桶, (byBucket.get(r.桶) ?? 0) + 1)
+
+  return {
+    ok: true,
+    issues: [],
+    work: title,
+    rows,
+    byBucket: [...byBucket.entries()].map(([桶, n]) => ({ 桶, 卡数: n })),
+  }
+}
 // —— 相对路径的把关：卡管理全部动作都按「库内的相对路径」定位，越界一律拒绝。
 // 理由与技术文档「写入库根之外的路径一律拒绝」一致：卡管理会移动与删除文件，
 // 路径越界在这里的代价是删掉库外的东西。
@@ -967,6 +1017,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   used              给卡记一笔用在哪个作品第几章（F-21）
   review            列出该复审的卡：热梗 3 个月、时事 6 个月、其余时效敏感 12 个月（F-23）
   overview          库况：各族卡数、最近收卡、待补与待复审数量（F-28）
+  project           项目视图：列出某本书用过的卡（F-26）
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
@@ -987,7 +1038,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --done <路径列表> collect mark 本批采完了哪些（相对源目录，逗号分隔）
   --thin <张数>     overview 的偏薄线，默认 5
   --months <月数>   retire 的闲置线，默认 12
-  --work <书名>     used 用在哪个作品
+  --work <书名>     used 用在哪个作品；project 看哪本书用过的卡
   --chapter <章>    used 第几章
   --dry-run         index rebuild 与 upgrade 只报清单，不落盘
   --json            输出单个 JSON 对象
@@ -995,7 +1046,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
 const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter', '--thin'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview', 'project'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
 export const CARD_ACTION_FLAGS = {
@@ -1244,6 +1295,33 @@ export function runCli(argv, io = {}) {
       { ok: true, errors: [], data: { fingerprint: plan.fingerprint, total: plan.total, started: true, done: prog.done, remaining, vanished } },
       head + list + gone,
     )
+    return 0
+  }
+
+  if (options.cmd === 'project') {
+    const pv = projectView(root, { work: options.work })
+    if (!pv.ok) {
+      emit({ ok: false, error: pv.issues.join('；'), data: {} }, pv.issues.join('\n'))
+      return 2
+    }
+    if (pv.rows.length === 0) {
+      // 空清单是正常结论：这本书还没用过任何卡。退出 0，不是失败。
+      emit(
+        { ok: true, errors: [], data: { work: pv.work, count: 0, rows: [], byBucket: [] } },
+        '《' + pv.work + '》还没用过任何卡。\n\n要让一本书用上卡，采集或检索时用 used 记一笔：\n  node scripts/vault.mjs used --path <相对路径> --work ' + pv.work + ' --chapter <章>',
+      )
+      return 0
+    }
+    const out = []
+    out.push('《' + pv.work + '》用过 ' + pv.rows.length + ' 张卡（按桶：' + pv.byBucket.map((b) => b.桶 + ' ' + b.卡数).join('，') + '）')
+    out.push('')
+    for (const r of pv.rows) {
+      out.push('- ' + r.卡名)
+      out.push('  ' + r.类型族 + ' / ' + r.子类 + '；' + r.用在哪)
+      out.push('  要点：' + r.要点)
+      out.push('  ' + r.相对路径)
+    }
+    emit({ ok: true, errors: [], data: { work: pv.work, count: pv.rows.length, rows: pv.rows, byBucket: pv.byBucket } }, out.join('\n'))
     return 0
   }
 

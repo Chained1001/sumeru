@@ -1568,6 +1568,99 @@ test('03 检索写了跨族查法，并要求空族如实说没查到', () => {
 })
 
 
+// —— 项目视图（F-26）。不新增记录结构，按「已用在」行筛（决策 D-28）。
+function makeProjectVault(marks) {
+  const root = tmp()
+  assert.equal(run(['init', '--vault', root]).code, 0)
+  const jf = join(root, '.c.json')
+  let i = 0
+  for (const m of marks) {
+    i += 1
+    writeFileSync(jf, JSON.stringify({
+      relPath: m.rel,
+      basic: { 卡名: m.卡名, 桶: m.桶 ?? '故事零件', 类型族: m.族 ?? 'S-02 人物设定', 子类: m.子类 ?? '弧光模板',
+        来源: '测试', 来源等级: '单源', 采集日期: '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' },
+      dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x', 底层意图: 'x', 适用条件: 'x', 操作步骤: 'x', 反例: 'x', 事实要点: 'x', 来源与日期: 'x', 史料层次: '转引', 纪年: 'x' },
+      body: { 内容: 'x', 已用在: m.已用在 ?? '', 补充记录: '' },
+    }), 'utf8')
+    assert.equal(run(['write', '--vault', root, '--card', jf]).code, 0)
+  }
+  return root
+}
+
+test('project 列出某本书用过的卡', () => {
+  const root = makeProjectVault([
+    { rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲', 已用在: '《长夜》第 3 章' },
+    { rel: '故事零件/人物设定/卡-20261001-乙.md', 卡名: '乙', 已用在: '《归墟》第 7 章' },
+    { rel: '故事零件/人物设定/卡-20261001-丙.md', 卡名: '丙' },
+  ])
+  const r = run(['project', '--vault', root, '--work', '长夜'])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /《长夜》用过 1 张卡/)
+  assert.match(r.stdout, /甲/)
+  assert.ok(!/^- 乙$/m.test(r.stdout), '乙只用在归墟，不该出现在长夜视图里')
+  assert.ok(!/^- 丙$/m.test(r.stdout), '丙没用过，不该出现')
+})
+
+test('project 只显示这本书那几条用在哪，不带出别书的章节', () => {
+  const root = makeProjectVault([
+    { rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲', 已用在: '《长夜》第 12 章；《归墟》第 7 章' },
+  ])
+  const r = run(['project', '--vault', root, '--work', '长夜'])
+  assert.match(r.stdout, /《长夜》第 12 章/)
+  assert.ok(!r.stdout.includes('《归墟》第 7 章'), '看长夜时不该把归墟的章节也列出来')
+})
+
+test('project 的书名匹配不管书名号', () => {
+  const root = makeProjectVault([
+    { rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲', 已用在: '《长夜》第 3 章' },
+  ])
+  assert.equal(run(['project', '--vault', root, '--work', '长夜']).code, 0)
+  assert.match(run(['project', '--vault', root, '--work', '《长夜》']).stdout, /用过 1 张卡/, '带书名号也该认')
+})
+
+test('project 在没用过的书上退 0 并说怎么记', () => {
+  const root = makeProjectVault([
+    { rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' },
+  ])
+  const r = run(['project', '--vault', root, '--work', '新书'])
+  assert.equal(r.code, 0, '空清单是正常结论，不是失败')
+  assert.match(r.stdout, /还没用过/)
+  assert.match(r.stdout, /used/, '该告诉用户怎么让一本书用上卡')
+})
+
+test('project 缺 --work 时报参数错误', () => {
+  const root = makeProjectVault([{ rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' }])
+  assert.equal(run(['project', '--vault', root]).code, 2)
+})
+
+test('project 与 used 咬合：记一笔就出现在视图里', () => {
+  const root = makeProjectVault([
+    { rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' },
+  ])
+  assert.match(run(['project', '--vault', root, '--work', '长夜']).stdout, /还没用过/)
+  run(['used', '--vault', root, '--path', '故事零件/人物设定/卡-20261001-甲.md', '--work', '长夜', '--chapter', '1'])
+  assert.match(run(['project', '--vault', root, '--work', '长夜']).stdout, /用过 1 张卡/, 'used 记完该立刻能在视图里看到')
+})
+
+test('project 是只读的', () => {
+  const root = makeProjectVault([
+    { rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲', 已用在: '《长夜》第 1 章' },
+  ])
+  const before = readFileSync(join(root, 'INDEX.md'), 'utf8')
+  run(['project', '--vault', root, '--work', '长夜'])
+  assert.equal(readFileSync(join(root, 'INDEX.md'), 'utf8'), before)
+  assert.equal(run(['check', '--vault', root]).code, 0)
+})
+
+
+test('06 浏览写了 project 一步，并说清按「已用在」筛而非另建记录', () => {
+  const text = workflow('06-浏览.md')
+  assert.match(text, /project/, '06 没接上 project')
+  assert.match(text, /已用在/, '没说按哪一行筛')
+  assert.match(text, /不新增任何记录结构|不另建/, '没写清为什么不另建记录')
+  assert.match(text, /还没用过/, '没说空清单该怎么讲')
+})
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
