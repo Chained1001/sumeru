@@ -53,3 +53,44 @@ test('脚本里用到的错误码都已在 02-脚本与测试 的错误码表中
   const missing = [...used].filter((c) => !documented.has(c)).sort()
   assert.deepEqual(missing, [], `这些错误码只在脚本里用、没写进 02 的错误码表：${missing.join('、')}`)
 })
+
+// 防的漂移：文件里混进控制字符，git 把整个文件判成二进制，diff 从此看不见。
+// 2026-10-24 真发生过：用 PowerShell 写 CHANGELOG 时反引号被当转义符吃掉——
+// 反引号后跟 0 成了 NUL、跟 a 成了响铃、跟 r 成了回车，CHANGELOG 在 git diff 里显示成 "Bin"。
+// 这类坏字节肉眼看不见，只能机器扫。CR 也一并拦：.gitattributes 定的是 eol=lf。
+test('仓库文本文件里没有控制字符（含 NUL 与 CR）', async () => {
+  const root = join(here, '..')
+  const exts = ['.md', '.mjs', '.json', '.yml', '.yaml']
+  const skipDirs = new Set(['node_modules', '.git'])
+  const bad = []
+
+  const walk = async (dir) => {
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      if (skipDirs.has(e.name)) continue
+      const full = join(dir, e.name)
+      if (e.isDirectory()) {
+        await walk(full)
+        continue
+      }
+      if (!exts.some((x) => e.name.endsWith(x))) continue
+
+      const buf = readFileSync(full)
+      const rel = full.slice(root.length + 1).split('\\').join('/')
+      for (let i = 0; i < buf.length; i++) {
+        const v = buf[i]
+        if (v === 0x09 || v === 0x0a) continue // tab 与 LF 合法
+        if (v < 0x20) {
+          const line = buf.subarray(0, i).toString('utf8').split('\n').length
+          const from = Math.max(0, i - 40)
+          const around = buf.subarray(from, Math.min(buf.length, i + 40)).toString('utf8')
+          const shown = [...around].map((ch) => (ch.charCodeAt(0) < 0x20 ? '?' : ch)).join('')
+          bad.push(rel + ':' + line + ' 有 0x' + v.toString(16).toUpperCase() + '，上下文「' + shown + '」')
+          break
+        }
+      }
+    }
+  }
+
+  await walk(root)
+  assert.deepEqual(bad, [], '这些文件里有控制字符（多半是 PowerShell 把反引号当转义符吃掉了）：\n' + bad.join('\n'))
+})
