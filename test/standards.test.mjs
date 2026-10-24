@@ -60,8 +60,11 @@ test('脚本里用到的错误码都已在 02-脚本与测试 的错误码表中
 // 这类坏字节肉眼看不见，只能机器扫。CR 也一并拦：.gitattributes 定的是 eol=lf。
 test('仓库文本文件里没有控制字符（含 NUL 与 CR）', async () => {
   const root = join(here, '..')
+  // .gitattributes 也是 eol 的事实源，但它没有扩展名，所以单列。
   const exts = ['.md', '.mjs', '.json', '.yml', '.yaml']
-  const skipDirs = new Set(['node_modules', '.git'])
+  const names = new Set(['.gitattributes', '.gitignore'])
+  // test/.tmp/ 是测试临时目录（.gitignore 已挡），残留夹具会误报。
+  const skipDirs = new Set(['node_modules', '.git', '.tmp', '.收编进度'])
   const bad = []
 
   const walk = async (dir) => {
@@ -72,7 +75,7 @@ test('仓库文本文件里没有控制字符（含 NUL 与 CR）', async () => 
         await walk(full)
         continue
       }
-      if (!exts.some((x) => e.name.endsWith(x))) continue
+      if (!exts.some((x) => e.name.endsWith(x)) && !names.has(e.name)) continue
 
       const buf = readFileSync(full)
       const rel = full.slice(root.length + 1).split('\\').join('/')

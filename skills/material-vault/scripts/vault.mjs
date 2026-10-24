@@ -561,11 +561,26 @@ export function packCards(root, { paths, work, date = new Date() } = {}) {
 //   created —— 库里还没有这张卡，按正常路径建一张
 // 只有参数不合法才是退出码 2。
 export function addMaterial(root, { card, date = new Date() } = {}) {
-  const input = typeof card === 'string' ? JSON.parse(readFileSync(card, 'utf8')) : card
-  if (!input || typeof input !== 'object') return { ok: false, issues: ['缺 --card：本次要记的卡内容（JSON 文件）'], action: null }
+  // 读卡文件：读不到要说人话。裸 readFileSync 会把 ENOENT 栈直接抛给用户，
+  // 看到的是 node:fs 的调用栈而不是「文件不存在」。
+  // 顺带兑现 USAGE 里写的「- 表示从标准输入读」——原写法 readFileSync('-')
+  // 只会去找一个名叫 `-` 的文件。
+  let input
+  if (typeof card === 'string') {
+    try {
+      const text = card === '-' ? readFileSync(0, 'utf8') : readFileSync(card, 'utf8')
+      input = JSON.parse(text)
+    } catch (e) {
+      const why = e.code === 'ENOENT' ? `找不到文件：${card}` : e instanceof SyntaxError ? `不是合法 JSON：${card}` : `读不了文件：${card}`
+      return { ok: false, issues: [why], action: null, code: 'E_ARGS' }
+    }
+  } else {
+    input = card
+  }
+  if (!input || typeof input !== 'object') return { ok: false, issues: ['缺 --card：本次要记的卡内容（JSON 文件）'], action: null, code: 'E_ARGS' }
 
   const key = objectKeyOf(input.basic)
-  if (!key) return { ok: false, issues: ['这张卡既没有「对象标识」也没有「卡名」，认不出是哪个对象'], action: null }
+  if (!key) return { ok: false, issues: ['这张卡既没有「对象标识」也没有「卡名」，认不出是哪个对象'], action: null, code: 'E_ARGS' }
 
   // 按对象键在库里找已有的卡，**只在同一类型族内找**。
   //
@@ -597,7 +612,19 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
       elsewhere.push({ rel, 类型族: c.basic.类型族 ?? '' })
     }
     // 没卡就正常建一张。补卡路径不负责猜路径与字段，交给 writeCard。
-    const written = writeCard(root, input)
+    //
+    // 但「补充内容」得写进去：建卡那一刻算出来的 incoming 如果不用，用户第一次
+    // 补卡带的内容就凭空消失——结果只说「已建新卡」，卡上却没有那段话。
+    // 这比子串误判更隐蔽：误判至少卡已经存在、能再补一次；这条是内容从没落过盘。
+    const built = { ...input }
+    if (incoming) {
+      const body = { ...(built.body ?? {}) }
+      const prev = String(body.补充记录 ?? '').trim()
+      const line = /^\d{4}-\d{2}-\d{2}\s+\S/.test(incoming) ? incoming : `${stamp} ${incoming}`
+      body.补充记录 = prev ? prev + '\n' + line : line
+      built.body = body
+    }
+    const written = writeCard(root, built)
     if (!written.ok) return { ok: false, issues: written.issues, action: 'created' }
 
     // 跨类型互指：A-10 明确要求「跨类型各自成卡并互指关联」。这里不是猜——
@@ -1648,7 +1675,11 @@ export function runCli(argv, io = {}) {
     const ad = addMaterial(root, { card: options.card })
     if (!ad.ok) {
       emit({ ok: false, error: ad.issues.join('；'), data: { action: ad.action } }, ad.issues.join('\n'))
-      return 2
+      // 参数问题（缺 --card、读不了文件、JSON 不合法、认不出对象）退 2；
+      // 卡内容本身不合格（如缺必填字段）是业务失败，退 1——与 write 一致。
+      // 原先一律退 2：同一份坏卡，add 说「参数错」、write 说「业务失败」，
+      // 两条命令对同一个事实给两个退出码，调用方无法统一判断。
+      return ad.code === 'E_ARGS' ? 2 : 1
     }
     // 三种结果都不是失败，但要说清是哪一种——用户得知道卡有没有多出来。
     const out = []

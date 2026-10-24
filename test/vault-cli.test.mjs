@@ -1996,6 +1996,39 @@ test('add 剥日期前缀要反复剥，否则自带日期的补充会重复写�
   assert.equal((body.match(/旧事/g) || []).length, 1)
 })
 
+test('add 与 write 对「同一份坏卡」给同一个退出码', () => {
+  // 原先 add 一律退 2（参数错误），write 退 1（业务失败）。同一份卡缺同样字段，
+  // 两条命令给出不同的退出码，调用方没法统一判断这是哪一类失败。
+  // 约定：参数问题退 2，卡内容不合格退 1。
+  const root = addVault()
+  const f = join(root, '.bad.json')
+  writeFileSync(f, JSON.stringify({ relPath: '故事零件/S-02 人物设定/卡-20261001-甲.md', basic: { 卡名: '甲' }, body: {} }), 'utf8')
+  const a = run(['add', '--vault', root, '--card', f])
+  const w = run(['write', '--vault', root, '--card', f])
+  assert.equal(a.code, w.code, `add 退 ${a.code}、write 退 ${w.code}，同一份坏卡应同码`)
+  assert.equal(a.code, 1, '缺必填字段是业务失败，退 1')
+})
+
+test('add 遇到读不了的文件退 2 且给可读提示，不抛原始堆栈', () => {
+  // 原先 readFileSync 未包 try，用户看到的是 node:fs 的调用栈。
+  const root = addVault()
+  const r = run(['add', '--vault', root, '--card', join(root, 'nope.json')])
+  assert.equal(r.code, 2, '读不了文件是参数错误，退 2')
+  assert.doesNotMatch(r.stderr + r.stdout, /\bat .*node:/, '不该把 node 的堆栈抛给用户')
+  assert.match(r.stderr + r.stdout, /找不到文件|读不了文件|不是合法 JSON/, '要给人话')
+})
+
+test('add 建新卡时把本次的补充内容一并写进去', () => {
+  // 原先 created 分支算出了 incoming 却从没用它：第一次补卡带的内容凭空消失，
+  // 而输出只说「已建新卡」。这比子串误判更隐蔽——误判至少能再补一次，
+  // 这条是内容从没落过盘。
+  const root = addVault()
+  const r = addRun(root, { 卡名: '甲', 对象标识: '甲', 补充内容: '第一次就有内容' })
+  assert.match(r.stdout, /已建新卡/)
+  const body = readFileSync(join(root, '故事零件/S-02 人物设定/卡-20261001-甲.md'), 'utf8')
+  assert.match(body, /补充记录[\s\S]*第一次就有内容/, '建卡时带的内容必须落盘')
+})
+
 test('add 认为跨类型不算重复，各自成卡并提示互相指认', () => {
   // F-30 原话：同一个人跨类型不算重复，人物设定卡和作品切片卡是两回事，用关联卡互指。
   // 若不分族，想给同一个对象建第二类卡会被静默挡掉。
@@ -2008,11 +2041,12 @@ test('add 认为跨类型不算重复，各自成卡并提示互相指认', () =
   assert.match(r.stdout, /关联卡/, '要提示把路径填进关联卡')
 })
 
-test('add 参数字法错误时退 2', () => {
+test('add 参数不合法时退 2', () => {
   const root = addVault()
   assert.equal(run(['add', '--vault', root]).code, 2, '缺 --card 应为 2')
   const f = join(root, '.bad.json')
   writeFileSync(f, JSON.stringify({ basic: {}, dimension: {}, body: {} }), 'utf8')
+  // 既无卡名也无对象标识：认不出对象，属参数问题。
   assert.equal(run(['add', '--vault', root, '--card', f]).code, 2, '既无卡名也无对象标识应为 2')
 })
 
