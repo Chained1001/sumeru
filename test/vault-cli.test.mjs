@@ -2077,6 +2077,21 @@ test('04 卡管理写了 dupes 一步，并要求逐组确认', () => {
   assert.match(text, /跨类型不算重复|跨类型各自成卡/, '没写跨类型该怎么处置')
   assert.match(text, /判不出哪张写得更好/, '没提醒机器判不出内容好坏')
 })
+test('add 给跨类型的同对象卡自动互指关联卡', () => {
+  // A-10 要求「跨类型各自成卡并互指关联」。两张卡的路径都是确定的，不是猜，
+  // 所以由机器填；只填一边则从旧卡查不到新卡，互指就成了单向。
+  const root = addVault()
+  addRun(root, { 卡名: '五条悟', 对象标识: '五条悟' })
+  const r = addRun(root, { 卡名: '五条悟', 对象标识: '五条悟', 桶: '作品案例', 族: 'S-09 作品切片', 子类: '人物' })
+  assert.match(r.stdout, /已把两边的路径写进各自的「关联卡」/)
+
+  const older = readFileSync(join(root, '故事零件/S-02 人物设定/卡-20261001-五条悟.md'), 'utf8')
+  const newer = readFileSync(join(root, '作品案例/S-09 作品切片/卡-20261001-五条悟.md'), 'utf8')
+  const lineOf = (t) => (t.match(/关联卡：(.*)/) || [])[1] ?? ''
+  assert.match(lineOf(older), /S-09 作品切片/, '旧卡要指向新卡')
+  assert.match(lineOf(newer), /S-02 人物设定/, '新卡要指向旧卡')
+  assert.equal(run(['check', '--vault', root]).code, 0)
+})
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })

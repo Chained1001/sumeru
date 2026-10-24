@@ -599,13 +599,35 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
     // 没卡就正常建一张。补卡路径不负责猜路径与字段，交给 writeCard。
     const written = writeCard(root, input)
     if (!written.ok) return { ok: false, issues: written.issues, action: 'created' }
+
+    // 跨类型互指：A-10 明确要求「跨类型各自成卡并互指关联」。这里不是猜——
+    // 新旧两张卡的路径都是确定的，把对方的路径写进各自的「关联卡」行。
+    // 只在两张卡的族确实不同时做；同族已被上面的查重挡住，走不到这里。
+    const linked = []
+    if (elsewhere.length) {
+      const mine = (input.body?.关联卡 ?? '').trim()
+      const theirs = elsewhere.map((e) => e.rel).join('；')
+      const merged = mine ? (mine.includes(theirs) ? mine : mine + '；' + theirs) : theirs
+      const selfEdit = cardEdit(root, { path: written.relPath, field: '关联卡', value: merged, section: SECTION_BODY })
+      if (selfEdit.ok) linked.push({ rel: written.relPath, 关联卡: merged })
+      // 反过来也要写：只填一边，从旧卡查不到新卡，互指就成了单向。
+      for (const e of elsewhere) {
+        const oldCard = readCard(join(root, e.rel))
+        const oldRel = String(oldCard.body.关联卡 ?? '').trim()
+        const oldMerged = oldRel ? (oldRel.includes(written.relPath) ? oldRel : oldRel + '；' + written.relPath) : written.relPath
+        const backEdit = cardEdit(root, { path: e.rel, field: '关联卡', value: oldMerged, section: SECTION_BODY })
+        if (backEdit.ok) linked.push({ rel: e.rel, 关联卡: oldMerged })
+      }
+    }
+
     return {
       ok: true,
       issues: [],
       action: 'created',
       relPath: written.relPath,
-      // 跨类型已有卡时把它们的路径交回去，让调用方补「关联卡」。
+      // 跨类型已有卡时把它们的路径交回去，并已把路径写进各自的「关联卡」。
       relatedElsewhere: elsewhere,
+      linked,
     }
   }
 
@@ -1616,12 +1638,17 @@ export function runCli(argv, io = {}) {
     if (ad.relatedElsewhere && ad.relatedElsewhere.length) {
       // 跨类型各自成卡（F-30），但两张卡得互指，否则同一个对象在库里散成互不相识的几张。
       out.push('')
-      out.push('这个对象在别的类型族里已有卡（跨类型不算重复，但要互相指认）：')
+      out.push('这个对象在别的类型族里已有卡（跨类型不算重复）：')
       for (const e of ad.relatedElsewhere) out.push('- ' + e.类型族 + '：' + e.rel)
-      out.push('把路径填进两张卡的「关联卡」行，写书时问这个对象才能一次拿全。')
+      if (ad.linked && ad.linked.length) {
+        out.push('已把两边的路径写进各自的「关联卡」行，写书时问这个对象能一次拿全。')
+      } else {
+        // 写关联卡失败不该让建卡失败，但也不能装作写成功了。
+        out.push('「关联卡」没写成功，请手动把路径填进两张卡，否则从任一张都查不到另一张。')
+      }
     }
     emit(
-      { ok: true, errors: [], data: { action: ad.action, relPath: ad.relPath, 卡名: ad.卡名, entry: ad.entry, duplicates: ad.duplicates ?? [], relatedElsewhere: ad.relatedElsewhere ?? [] } },
+      { ok: true, errors: [], data: { action: ad.action, relPath: ad.relPath, 卡名: ad.卡名, entry: ad.entry, duplicates: ad.duplicates ?? [], relatedElsewhere: ad.relatedElsewhere ?? [], linked: ad.linked ?? [] } },
       out.join('\n'),
     )
     return 0
