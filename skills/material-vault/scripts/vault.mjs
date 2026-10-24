@@ -655,6 +655,48 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
     duplicates: existing.map((e) => e.rel),
   }
 }
+
+// —— 查全库同对象双卡（F-30 批三）：只列不改，删不删由人逐张点名。
+//
+// 这一条是 J-05 的机器替身。J-05 原来的验证方式写的是「人工核对：索引无
+// 同对象双卡」——全库唯一一条靠人眼在索引里找双卡的硬判据。采集时最容易
+// 失守的恰恰是它：卡一张张建出来，没人会回头逐行比对「这两张是不是同一个人」。
+//
+// 分组键是「类型族 + 对象键」，不是对象键单用：跨类型各自成卡（F-30），
+// 同一个人在人物设定与作品切片里各有一张是对的，不是重复。
+export function dupesReport(root) {
+  const groups = new Map()
+  for (const rel of listCards(root)) {
+    const card = readCard(join(root, rel))
+    const key = objectKeyOf(card.basic)
+    if (!key) continue
+    const family = String(card.basic.类型族 ?? '').trim()
+    const gk = family + '\u0000' + key
+    if (!groups.has(gk)) groups.set(gk, { 类型族: family, 对象键: key, 卡: [] })
+    groups.get(gk).卡.push({
+      卡名: card.basic.卡名 ?? '',
+      采集日期: card.basic.采集日期 ?? '',
+      对象标识: card.basic.对象标识 ?? '',
+      相对路径: rel,
+    })
+  }
+
+  const rows = []
+  for (const g of groups.values()) {
+    if (g.卡.length < 2) continue
+    // 同组内按采集日期排：先收的那张通常该留下，后来的内容并进去。
+    g.卡.sort((a, b) => a.采集日期.localeCompare(b.采集日期) || a.相对路径.localeCompare(b.相对路径))
+    rows.push({
+      类型族: g.类型族,
+      卡数: g.卡.length,
+      卡: g.卡,
+      建议留下: g.卡[0].相对路径,
+      建议并入: g.卡.slice(1).map((c) => c.相对路径),
+    })
+  }
+  rows.sort((a, b) => b.卡数 - a.卡数 || a.类型族.localeCompare(b.类型族))
+  return { ok: true, issues: [], rows, total: rows.reduce((n, r) => n + r.卡数, 0) }
+}
 // —— 相对路径的把关：卡管理全部动作都按「库内的相对路径」定位，越界一律拒绝。
 // 理由与技术文档「写入库根之外的路径一律拒绝」一致：卡管理会移动与删除文件，
 // 路径越界在这里的代价是删掉库外的东西。
@@ -1237,6 +1279,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   project           项目视图：列出某本书用过的卡（F-26）
   pack              把选中的卡打包成一份引用文件，私有卡一律不进（F-27）
   add               补卡不建新卡：已有就跳过或补进旧卡，没有才建（F-30）
+  dupes             查全库同对象双卡，只列不改（F-30）
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
@@ -1268,7 +1311,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
 const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter', '--thin', '--paths', '--out', '--object'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview', 'project', 'pack', 'add'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview', 'project', 'pack', 'add', 'dupes'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
 export const CARD_ACTION_FLAGS = {
@@ -1517,6 +1560,29 @@ export function runCli(argv, io = {}) {
       { ok: true, errors: [], data: { fingerprint: plan.fingerprint, total: plan.total, started: true, done: prog.done, remaining, vanished } },
       head + list + gone,
     )
+    return 0
+  }
+
+  if (options.cmd === 'dupes') {
+    const dp = dupesReport(root)
+    if (dp.rows.length === 0) {
+      // 没有双卡是正常结论，退 0。
+      emit({ ok: true, errors: [], data: { groups: 0, total: 0, rows: [] } }, '没有同对象双卡：每个类型族里同一个对象都只有一张卡。')
+      return 0
+    }
+    const out = []
+    out.push('发现 ' + dp.rows.length + ' 组同对象双卡，共 ' + dp.total + ' 张（只列不改，删不删由你逐步确认）')
+    out.push('')
+    for (const g of dp.rows) {
+      out.push('【' + g.类型族 + '】' + g.卡数 + ' 张')
+      for (const c of g.卡) out.push('- ' + c.卡名 + '（收于 ' + c.采集日期 + '）' + c.相对路径)
+      out.push('  建议留下：' + g.建议留下)
+      out.push('  合并命令：card merge --from <多余的> --into ' + g.建议留下)
+      out.push('')
+    }
+    out.push('合并只搬「补充记录」与「关联卡」，原卡进 已删卡片/ 可找回。')
+    out.push('两张卡的内容不一样时，先逐张看过再决定并哪张——机器只按采集日期判，判不出哪张写得更好。')
+    emit({ ok: true, errors: [], data: { groups: dp.rows.length, total: dp.total, rows: dp.rows } }, out.join('\n'))
     return 0
   }
 

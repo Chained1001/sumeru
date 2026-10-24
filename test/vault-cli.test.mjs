@@ -1985,6 +1985,98 @@ test('01 采集的产物里保留了整表翻禁令', () => {
   const text = workflow('01-采集.md')
   assert.match(text, /不要整表翻/)
 })
+// —— 查全库同对象双卡（F-30 批三）。J-05 原来的验证方式是「人工核对：索引无
+// 同对象双卡」——全库唯一一条靠人眼找双卡的硬判据，dupes 是它的机器替身。
+function writeDupCard(root, rel, spec) {
+  const basic = { 卡名: spec.卡名, 桶: spec.桶 ?? '故事零件', 类型族: spec.族 ?? 'S-02 人物设定',
+    子类: spec.子类 ?? '角色卡', 来源: '测试', 来源等级: '单源',
+    采集日期: spec.采集日期 ?? '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' }
+  if (spec.对象标识 !== undefined) basic.对象标识 = spec.对象标识
+  const f = join(root, '.d.json')
+  writeFileSync(f, JSON.stringify({
+    relPath: rel, basic,
+    dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
+    body: { 内容: '内容' + spec.卡名, 已用在: '', 补充记录: '' },
+  }), 'utf8')
+  assert.equal(run(['write', '--vault', root, '--card', f]).code, 0)
+}
+
+test('dupes 在没有双卡时说没有', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  writeDupCard(root, '故事零件/S-02 人物设定/卡-20261001-甲.md', { 卡名: '甲', 对象标识: '甲' })
+  const r = run(['dupes', '--vault', root])
+  assert.equal(r.code, 0, '没双卡不是失败')
+  assert.match(r.stdout, /没有同对象双卡/)
+})
+
+test('dupes 列出同族的同对象双卡，并建议留下较早那张', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  writeDupCard(root, '故事零件/S-02 人物设定/卡-20261001-五条悟.md', { 卡名: '五条悟', 对象标识: '五条悟', 采集日期: '2026-10-01' })
+  writeDupCard(root, '故事零件/S-02 人物设定/卡-20261005-五条悟.md', { 卡名: '五条 悟', 对象标识: '五条 悟', 采集日期: '2026-10-05' })
+  const r = run(['dupes', '--vault', root])
+  assert.match(r.stdout, /发现 1 组/)
+  assert.match(r.stdout, /共 2 张/)
+  assert.match(r.stdout, /建议留下：.*卡-20261001-五条悟\.md/, '先收的那张通常该留下')
+  assert.match(r.stdout, /card merge --from/)
+  assert.match(r.stdout, /只列不改/, '它是只读的，删卡要人逐步确认')
+  assert.match(r.stdout, /判不出哪张写得更好/, '机器只按日期判，要提醒人自己看过')
+})
+
+test('dupes 不把跨类型的同一对象算成双卡', () => {
+  // F-30：跨类型各自成卡并互指，不是重复。算成重复会诱导人去合并不该合的卡。
+  const root = tmp()
+  run(['init', '--vault', root])
+  writeDupCard(root, '故事零件/S-02 人物设定/卡-20261001-五条悟.md', { 卡名: '五条悟', 对象标识: '五条悟' })
+  writeDupCard(root, '作品案例/S-09 作品切片/卡-20261001-五条悟.md', {
+    卡名: '五条悟', 对象标识: '五条悟', 桶: '作品案例', 族: 'S-09 作品切片', 子类: '人物' })
+  const r = run(['dupes', '--vault', root])
+  assert.match(r.stdout, /没有同对象双卡/, '跨类型各一张是对的，不是重复')
+})
+
+test('dupes 不把不同对象算成双卡', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  writeDupCard(root, '故事零件/S-02 人物设定/卡-20261001-甲.md', { 卡名: '长相思', 对象标识: '长相思' })
+  writeDupCard(root, '故事零件/S-02 人物设定/卡-20261002-乙.md', { 卡名: '长相守', 对象标识: '长相守' })
+  assert.match(run(['dupes', '--vault', root]).stdout, /没有同对象双卡/)
+})
+
+test('dupes 在三张同对象时都列出来', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  for (const [i, d] of [['01', '2026-10-01'], ['05', '2026-10-05'], ['10', '2026-10-10']]) {
+    writeDupCard(root, `故事零件/S-02 人物设定/卡-2026${d.slice(5).replace('-', '')}-第${i}张.md`,
+      { 卡名: '五条悟' + i, 对象标识: '五条悟', 采集日期: d })
+  }
+  const r = run(['dupes', '--vault', root])
+  assert.match(r.stdout, /3 张/)
+  const j = JSON.parse(run(['dupes', '--vault', root, '--json']).stdout)
+  assert.equal(j.data.total, 3)
+  assert.equal(j.data.rows[0].建议并入.length, 2, '三张里该并两张')
+})
+
+test('dupes 是只读的', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  writeDupCard(root, '故事零件/S-02 人物设定/卡-20261001-甲.md', { 卡名: '甲', 对象标识: '甲' })
+  writeDupCard(root, '故事零件/S-02 人物设定/卡-20261002-甲2.md', { 卡名: '甲2', 对象标识: '甲' })
+  const before = JSON.parse(run(['overview', '--vault', root, '--json']).stdout).data.total
+  run(['dupes', '--vault', root])
+  assert.equal(JSON.parse(run(['overview', '--vault', root, '--json']).stdout).data.total, before)
+  assert.equal(run(['check', '--vault', root]).code, 0)
+})
+
+
+test('04 卡管理写了 dupes 一步，并要求逐组确认', () => {
+  const text = workflow('04-卡管理.md')
+  assert.match(text, /dupes/, '04 没接上 dupes')
+  assert.match(text, /只列不改/, '没写它是只读的')
+  assert.match(text, /逐组确认/, '合并必须逐组确认，不能一句「都合了吧」就批量做')
+  assert.match(text, /跨类型不算重复|跨类型各自成卡/, '没写跨类型该怎么处置')
+  assert.match(text, /判不出哪张写得更好/, '没提醒机器判不出内容好坏')
+})
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
