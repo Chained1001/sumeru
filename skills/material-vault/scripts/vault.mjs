@@ -466,6 +466,88 @@ export function projectView(root, { work } = {}) {
     byBucket: [...byBucket.entries()].map(([桶, n]) => ({ 桶, 卡数: n })),
   }
 }
+
+// —— 引用包（F-27）：把选中的卡打包成一份 Markdown，喂给写作助手。
+//
+// 这是本技能第一个**导出**功能，于是 F-17 那条「私有为是即不分发」
+// 到这一版才第一次有了可执行的地方：凡是导出的产物，私有卡一律不进。
+// 过滤必须发生在这里、且不依赖调用方记得传参——默认就排除，没有开关。
+//
+// 输出写在当前目录而不是库内：引用包是写书时的消耗品，写进库会跟着库
+// 被拷来拷去、越攒越肥；而库要能拷进写书项目，不该装这种一次性产物。
+export function packCards(root, { paths, work, date = new Date() } = {}) {
+  const list = Array.isArray(paths) ? paths : splitValues(paths)
+  if (list.length === 0) {
+    return { ok: false, issues: ['缺 --paths：要打包哪些卡，给相对路径（逗号分隔）'], cards: [], excluded: [] }
+  }
+
+  const cards = []
+  const excluded = []
+  const missing = []
+  for (const raw of list) {
+    const checked = cardRel(raw)
+    if (!checked.ok) return { ok: false, issues: [checked.error], cards: [], excluded: [] }
+    const rel = checked.rel
+    const file = join(root, rel)
+    if (!existsSync(file)) { missing.push(rel); continue }
+    const card = readCard(file)
+    // F-17：私有的卡不进任何导出产物。悄悄跳过不行——得让人知道少了什么，
+    // 否则他会以为引用包是完整的。
+    if (String(card.basic.私有 ?? '').trim() === '是') {
+      excluded.push({ 卡名: card.basic.卡名 ?? '', 相对路径: rel, 原因: '私有：是（F-17 规定不外流）' })
+      continue
+    }
+    cards.push({ rel, basic: card.basic, dimension: card.dimension, body: card.body })
+  }
+
+  if (missing.length) {
+    return { ok: false, issues: missing.map((m) => `卡不存在：${m}`), cards: [], excluded: [] }
+  }
+  if (cards.length === 0) {
+    // 全是私有卡时不产出空文件：那会让人以为导成功了，而其实一张都没进去。
+    return { ok: false, issues: ['给的全都是私有卡，没有可打包的内容（F-17：私有卡一律不外流）'], cards: [], excluded }
+  }
+
+  const stamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  const title = work ? `引用包：${work}` : '引用包'
+
+  const out = []
+  out.push(`# ${title}`)
+  out.push('')
+  out.push(`打包于 ${stamp}，共 ${cards.length} 张卡。`)
+  out.push('')
+  out.push('> 这份文件是给写作助手看的素材清单，由 Sumeru 素材库导出。')
+  out.push('> 每张卡给类型、要点、内容与借鉴意图；「私有」为「是」的卡不会出现在这里。')
+
+  for (const c of cards) {
+    out.push('')
+    out.push(`## ${c.basic.卡名 ?? '（无卡名）'}`)
+    out.push('')
+    out.push(`- 类型：${c.basic.类型族 ?? ''} / ${c.basic.子类 ?? ''}`)
+    out.push(`- 要点：${c.basic.要点 ?? ''}`)
+    out.push(`- 时效：${c.basic.时效状态 ?? ''}；来源等级：${c.basic.来源等级 ?? ''}`)
+    if (c.basic.来源) out.push(`- 来源：${c.basic.来源}`)
+    if (c.basic.出处链接) out.push(`- 出处：${c.basic.出处链接}`)
+    // 正文只取「内容」「原文摘录或事实要点」「借鉴意图」三行：
+    // 「关联卡」「补充记录」是库内维护用的，喂给写作助手只会变成噪音；
+    // 「已用在」是作者自己的账，也不该跟着素材一起流出去。
+    const sections = [
+      ['内容', c.body.内容],
+      ['原文摘录或事实要点', c.body.原文摘录或事实要点],
+      ['借鉴意图', c.body.借鉴意图],
+    ]
+    for (const [label, value] of sections) {
+      const v = String(value ?? '').trim()
+      if (!v) continue
+      out.push('')
+      out.push(`${label}：`)
+      out.push('')
+      out.push(v)
+    }
+  }
+
+  return { ok: true, issues: [], cards, excluded, content: out.join('\n') + '\n', stamp, title }
+}
 // —— 相对路径的把关：卡管理全部动作都按「库内的相对路径」定位，越界一律拒绝。
 // 理由与技术文档「写入库根之外的路径一律拒绝」一致：卡管理会移动与删除文件，
 // 路径越界在这里的代价是删掉库外的东西。
@@ -1018,6 +1100,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   review            列出该复审的卡：热梗 3 个月、时事 6 个月、其余时效敏感 12 个月（F-23）
   overview          库况：各族卡数、最近收卡、待补与待复审数量（F-28）
   project           项目视图：列出某本书用过的卡（F-26）
+  pack              把选中的卡打包成一份引用文件，私有卡一律不进（F-27）
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
@@ -1036,6 +1119,8 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --source <目录>   collect 的素材来源目录
   --fingerprint <值> collect mark 的源指纹，由 collect plan 给出
   --done <路径列表> collect mark 本批采完了哪些（相对源目录，逗号分隔）
+  --paths <路径列表> pack 打哪些卡（相对路径，逗号分隔）
+  --out <文件路径>  pack 写到哪，默认当前目录 引用包-YYYY-MM-DD.md
   --thin <张数>     overview 的偏薄线，默认 5
   --months <月数>   retire 的闲置线，默认 12
   --work <书名>     used 用在哪个作品；project 看哪本书用过的卡
@@ -1045,8 +1130,8 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --help, -h        显示本说明`
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
-const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter', '--thin'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview', 'project'])
+const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter', '--thin', '--paths', '--out'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview', 'project', 'pack'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
 export const CARD_ACTION_FLAGS = {
@@ -1294,6 +1379,31 @@ export function runCli(argv, io = {}) {
     emit(
       { ok: true, errors: [], data: { fingerprint: plan.fingerprint, total: plan.total, started: true, done: prog.done, remaining, vanished } },
       head + list + gone,
+    )
+    return 0
+  }
+
+  if (options.cmd === 'pack') {
+    const pk = packCards(root, { paths: options.paths, work: options.work })
+    if (!pk.ok) {
+      emit({ ok: false, error: pk.issues.join('；'), data: { excluded: pk.excluded } }, pk.issues.join('\n'))
+      return 2
+    }
+    // 输出目录取当前工作目录：引用包是消耗品，不该写进库（见 packCards 的注释）。
+    // 用 runCli 里的局部 cwd（第 1170 行算出），不是 options.cwd——后者根本不存在。
+    const target = options.out ? resolve(cwd, options.out) : join(cwd, `引用包-${pk.stamp}.md`)
+    writeFileSync(target, pk.content, 'utf8')
+    const out = []
+    out.push(`已打包 ${pk.cards.length} 张卡 → ${target}`)
+    if (pk.excluded.length) {
+      // 被排除的卡必须报出来：不说的话用户会以为引用包是完整的。
+      out.push('')
+      out.push(`另有 ${pk.excluded.length} 张没进包（私有卡不外流，F-17）：`)
+      for (const e of pk.excluded) out.push(`- ${e.卡名}：${e.原因}`)
+    }
+    emit(
+      { ok: true, errors: [], data: { out: target, count: pk.cards.length, included: pk.cards.map((c) => c.rel), excluded: pk.excluded } },
+      out.join('\n'),
     )
     return 0
   }

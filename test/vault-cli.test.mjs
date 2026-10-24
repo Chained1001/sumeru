@@ -1661,6 +1661,129 @@ test('06 浏览写了 project 一步，并说清按「已用在」筛而非另�
   assert.match(text, /不新增任何记录结构|不另建/, '没写清为什么不另建记录')
   assert.match(text, /还没用过/, '没说空清单该怎么讲')
 })
+// —— 引用包（F-27）。这是本技能第一个导出功能，A-11 的第三条判据
+// （把私有卡与公开卡一起导出，产物只含公开那张）到这一版才第一次可测。
+function makePackVault(specs) {
+  const root = tmp()
+  assert.equal(run(['init', '--vault', root]).code, 0)
+  const jf = join(root, '.c.json')
+  for (const s of specs) {
+    writeFileSync(jf, JSON.stringify({
+      relPath: s.rel,
+      basic: { 卡名: s.卡名, 桶: '故事零件', 类型族: 'S-02 人物设定', 子类: '弧光模板',
+        来源: '测试来源', 来源等级: '单源', 采集日期: '2026-10-01', 时效状态: '长期',
+        要点: '测', 私有: s.私有 ?? '否' },
+      dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
+      body: { 内容: '内容' + s.卡名, 原文摘录或事实要点: '', 借鉴意图: '借鉴' + s.卡名,
+        已用在: '《我的书》第 1 章', 关联卡: '', 补充记录: '2026-01-01 补过' },
+    }), 'utf8')
+    assert.equal(run(['write', '--vault', root, '--card', jf]).code, 0)
+  }
+  return root
+}
+
+// pack 会往 cwd 写文件，故给它一个临时 cwd，免得污染仓库。
+function packRun(args) {
+  const cwd = tmp()
+  const lines = []
+  const code = runCli(args, { out: (s) => lines.push(s), err: (s) => lines.push(s), cwd })
+  return { code, stdout: lines.join('\n'), cwd }
+}
+
+test('pack 导出时排除私有卡，产物只含非私有那张（A-11 第三条）', () => {
+  const root = makePackVault([
+    { rel: '故事零件/人物设定/卡-20261001-公开甲.md', 卡名: '公开甲', 私有: '否' },
+    { rel: '故事零件/人物设定/卡-20261001-私有乙.md', 卡名: '私有乙', 私有: '是' },
+  ])
+  const r = packRun(['pack', '--vault', root, '--paths',
+    '故事零件/人物设定/卡-20261001-公开甲.md,故事零件/人物设定/卡-20261001-私有乙.md'])
+  assert.equal(r.code, 0, r.stdout)
+  assert.match(r.stdout, /已打包 1 张卡/)
+  assert.match(r.stdout, /私有乙/, '被排除的卡要报出来，否则用户以为包是完整的')
+
+  const file = /→ (.+)$/m.exec(r.stdout)[1].trim()
+  const text = readFileSync(file, 'utf8')
+  assert.match(text, /公开甲/)
+  assert.ok(!text.includes('私有乙'), '私有卡绝不能进任何导出产物（F-17）')
+  assert.ok(!text.includes('内容私有乙'), '连私有卡的内容也不能漏出去')
+})
+
+test('pack 不把作者自己的账带出去', () => {
+  // 「已用在」与「补充记录」是库内维护用的，喂给写作助手只会变成噪音，
+  // 「已用在」更是作者自己的创作进度，不该跟着素材一起流出去。
+  const root = makePackVault([{ rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' }])
+  const r = packRun(['pack', '--vault', root, '--paths', '故事零件/人物设定/卡-20261001-甲.md'])
+  const text = readFileSync(/→ (.+)$/m.exec(r.stdout)[1].trim(), 'utf8')
+  assert.match(text, /内容甲/, '正文该带出去')
+  assert.match(text, /借鉴甲/, '借鉴意图该带出去')
+  assert.ok(!text.includes('已用在'), '「已用在」是作者的账，不该导出')
+  assert.ok(!text.includes('补充记录'), '「补充记录」是库内维护用的')
+  assert.ok(!text.includes('关联卡'))
+})
+
+test('pack 默认写到当前目录且文件名带日期', () => {
+  // 引用包是消耗品，写进库会让库越攒越肥，而库要能被拷进写书项目。
+  const root = makePackVault([{ rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' }])
+  const r = packRun(['pack', '--vault', root, '--paths', '故事零件/人物设定/卡-20261001-甲.md'])
+  const file = /→ (.+)$/m.exec(r.stdout)[1].trim()
+  assert.match(file, /引用包-\d{4}-\d{2}-\d{2}\.md$/, '默认文件名该带日期')
+  assert.equal(existsSync(file), true)
+  assert.ok(file.startsWith(r.cwd), '该写在当前工作目录')
+  assert.ok(!file.startsWith(root), '不该写进库里')
+})
+
+test('pack 的 --out 能指定位置', () => {
+  const root = makePackVault([{ rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' }])
+  const r = packRun(['pack', '--vault', root, '--paths', '故事零件/人物设定/卡-20261001-甲.md', '--out', 'my.md'])
+  assert.match(r.stdout, /my\.md/)
+  assert.equal(existsSync(join(r.cwd, 'my.md')), true)
+})
+
+test('pack 在全是私有卡时报错，不产出空文件', () => {
+  // 空文件会让人以为导成功了，而其实一张都没进去。
+  const root = makePackVault([{ rel: '故事零件/人物设定/卡-20261001-私.md', 卡名: '私', 私有: '是' }])
+  const r = packRun(['pack', '--vault', root, '--paths', '故事零件/人物设定/卡-20261001-私.md'])
+  assert.equal(r.code, 2)
+  assert.match(r.stdout, /全都是私有卡/)
+})
+
+test('pack 缺参数或路径越界时报参数错误', () => {
+  const root = makePackVault([{ rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' }])
+  assert.equal(packRun(['pack', '--vault', root]).code, 2, '缺 --paths 应为 2')
+  assert.equal(packRun(['pack', '--vault', root, '--paths', '故事零件/没有.md']).code, 2, '卡不存在应为 2')
+  assert.equal(packRun(['pack', '--vault', root, '--paths', '../外面.md']).code, 2, '越界应为 2')
+})
+
+test('pack 把书名放进标题', () => {
+  const root = makePackVault([{ rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' }])
+  const r = packRun(['pack', '--vault', root, '--paths', '故事零件/人物设定/卡-20261001-甲.md', '--work', '长夜', '--out', 'w.md'])
+  const text = readFileSync(join(r.cwd, 'w.md'), 'utf8')
+  assert.match(text, /^# 引用包：长夜/)
+})
+
+test('pack 不改库', () => {
+  const root = makePackVault([{ rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' }])
+  packRun(['pack', '--vault', root, '--paths', '故事零件/人物设定/卡-20261001-甲.md'])
+  assert.equal(run(['check', '--vault', root]).code, 0)
+})
+
+
+test('06 浏览写了 pack 一步，并要求私有卡无开关排除', () => {
+  const text = workflow('06-浏览.md')
+  assert.match(text, /pack/, '06 没接上 pack')
+  assert.match(text, /私有卡.*排除|排除.*私有/, '没写私有卡要排除')
+  assert.match(text, /没有开关|无开关/, '没写死不能开这个口子')
+  assert.match(text, /被排除的卡.*列|列出来/, '没说被排除的卡要报出来')
+  assert.match(text, /当前目录|库外/, '没写清写到哪里')
+})
+
+test('06 浏览不再自称「不写任何文件」——第 7 步会写库外文件', () => {
+  // 早先的版本通篇宣称只读。加了引用包之后那句话不再成立，
+  // 留着会让下一个读流程的人以为 06 永不落盘。
+  const text = workflow('06-浏览.md')
+  assert.match(text, /库外|不改库/, '没交代第 7 步的例外')
+  assert.match(text, /唯一例外|唯一会写文件/, '没把例外点明')
+})
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
