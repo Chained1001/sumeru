@@ -1268,8 +1268,11 @@ export function runCli(argv, io = {}) {
       parts.push('另 ' + links.rows.length + ' 张带出处链接的卡已超过 ' + links.months + ' 个月未核对，链接还能不能打开得你自己点一下：')
       parts.push(links.rows.map((r) => '- ' + r.卡名 + '（' + r.采集日期 + '）\n  ' + r.出处链接).join('\n'))
     }
-    parts.push('')
-    parts.push('复审的意思是：看一眼内容还准不准，把「时效状态」改成现状（现行／已过时／待观察），不平的按 04 改。')
+    // 没有该复审的卡时不必解释复审怎么做——那句话只在真有清单时才有用。
+    if (re.rows.length > 0) {
+      parts.push('')
+      parts.push('复审的意思是：看一眼内容还准不准，把「时效状态」改成现状（现行／已过时／待观察），要改的按 04 走 card edit。')
+    }
     emit(
       { ok: true, errors: [], data: { cycles: re.cycles, overdue: re.rows, links: links.rows } },
       parts.join('\n').replace(/\n\n\n/g, '\n\n'),

@@ -1450,6 +1450,15 @@ test('06 浏览把「薄」说成提示而非错误，且薄线可调', () => {
 })
 
 
+test('review 在清单为空时不多嘴解释复审怎么做', () => {
+  // 没有该复审的卡就不必教人怎么复审，那句话只在真有清单时才有用。
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '甲' },
+  ])
+  const r = run(['review', '--vault', root])
+  assert.match(r.stdout, /没有超期/)
+  assert.ok(!r.stdout.includes('复审的意思是'), '空清单时不该附上这套说明')
+})
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
