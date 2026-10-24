@@ -633,9 +633,27 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
 
   // 已有卡：先看这次的内容是不是它已经有了。
   // 判「已有」不只看补充记录：内容可能本来就在正文里，那也算有。
+  //
+  // 判定尺度是「整条相等」，不是「子串包含」。
+  // 子串会把意思相反的新信息吞掉：旧正文写「他并不是天才，全靠苦练」，
+  // 新补「天才」是它的子串，于是判成「已有」而静默丢弃——丢掉的那条恰好是
+  // 与旧文相反的说法，正是最该记进去的。这类误判无从察觉：结果只显示「这张卡
+  // 上已经有这段内容了」，人不会去核对一张据说没变的卡。
+  //
+  // 宁可多追加一条近似重复，也不吞掉一条真新增：前者在卡上看得见，事后合并
+  // 得掉；后者看不见，会一直缺着。尺度与 J-26 同向——不确定时选能留下痕迹的那边。
   const target = existing[0]
-  const bodyText = Object.values(target.card.body ?? {}).join('\n')
-  if (incoming && bodyText.includes(incoming)) {
+  const bodySections = Object.values(target.card.body ?? {}).map((v) => String(v ?? '').trim())
+  const alreadyThere = bodySections.some((text) => {
+    if (!text) return false
+    // 整节就是这条内容，或其中某一行与它逐字相同（补充记录是逐行记的）。
+    if (text === incoming) return true
+    return text.split('\n').some((line) => {
+      const bare = line.trim().replace(/^\d{4}-\d{2}-\d{2}\s+/, '') // 去掉补充行的日期前缀
+      return bare === incoming
+    })
+  })
+  if (incoming && alreadyThere) {
     return {
       ok: true,
       issues: [],
