@@ -6,7 +6,11 @@
 
 ### Added
 
-（下一版待记）
+- `find` 加 `--object <对象名>`：按「对象标识」认得出同一对象，不按字面（F-30 批一）
+- 卡格式加「对象标识」字段（可选）：缺省时由卡名推，老库不用 `upgrade`
+- `cardFormat.mjs` 加 `objectKey`（归一化）与 `objectKeyOf`（取卡的键）两个 interface
+- `asset/素材卡版式.md` 的基本信息节加「对象标识」行并说明判重尺度
+- 判据 J-23（同一对象的判定尺度），依据区加 E-14
 
 ### Changed
 

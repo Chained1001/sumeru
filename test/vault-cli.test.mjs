@@ -1784,6 +1784,91 @@ test('06 浏览不再自称「不写任何文件」——第 7 步会写库外�
   assert.match(text, /库外|不改库/, '没交代第 7 步的例外')
   assert.match(text, /唯一例外|唯一会写文件/, '没把例外点明')
 })
+// —— 认得出同一对象（F-30 批一）。判重的地基：靠「对象标识」而非字面比对。
+function makeObjectVault(specs) {
+  const root = tmp()
+  assert.equal(run(['init', '--vault', root]).code, 0)
+  const jf = join(root, '.c.json')
+  for (const s of specs) {
+    const basic = { 卡名: s.卡名, 桶: s.桶 ?? '故事零件', 类型族: s.族 ?? 'S-02 人物设定',
+      子类: s.子类 ?? '角色卡', 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-01',
+      时效状态: '长期', 要点: '测', 私有: '否' }
+    if (s.对象标识 !== undefined) basic.对象标识 = s.对象标识
+    writeFileSync(jf, JSON.stringify({
+      relPath: s.rel, basic,
+      dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
+      body: { 内容: 'x', 已用在: '', 补充记录: '' },
+    }), 'utf8')
+    assert.equal(run(['write', '--vault', root, '--card', jf]).code, 0)
+  }
+  return root
+}
+
+test('find --object 认得出同一对象的不同写法', () => {
+  // F-30 的补卡规则全靠这个判断。若「五条悟」与「五条 悟」算两个对象，
+  // 补卡规则就形同虚设——而它正是采集时最容易失守的地方。
+  const root = makeObjectVault([
+    { rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '五条悟', 对象标识: '五条悟' },
+  ])
+  for (const variant of ['五条悟', '五条 悟', '五条悟（咒术回战）', '  五条悟  ']) {
+    const r = run(['find', '--vault', root, '--object', variant])
+    assert.equal(r.code, 0)
+    assert.match(r.stdout, /命中 1 张/, `「${variant}」该认出同一个对象`)
+  }
+})
+
+test('find --object 不把相近的名字认成同一对象', () => {
+  // 误判的代价是两张该分开的卡被并成一张，比漏判更难挽回。
+  const root = makeObjectVault([
+    { rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '长相思', 对象标识: '长相思' },
+  ])
+  const r = run(['find', '--vault', root, '--object', '长相守'])
+  assert.equal(r.code, 0, '空结果不是失败')
+  assert.match(r.stdout, /没有命中/)
+})
+
+test('find --object 在缺「对象标识」的老卡上按卡名认', () => {
+  const root = makeObjectVault([
+    { rel: '故事零件/剧情桥段/卡-20261001-乙.md', 卡名: '当众退婚打脸', 族: 'S-03 剧情桥段', 子类: '开局钩子' },
+  ])
+  assert.match(run(['find', '--vault', root, '--object', '当众退婚打脸']).stdout, /命中 1 张/)
+})
+
+test('find --object 与其它筛选项是「与」', () => {
+  const root = makeObjectVault([
+    { rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '五条悟', 对象标识: '五条悟' },
+  ])
+  assert.match(run(['find', '--vault', root, '--object', '五条悟', '--bucket', '故事零件']).stdout, /命中 1 张/)
+  assert.match(run(['find', '--vault', root, '--object', '五条悟', '--bucket', '现实避坑']).stdout, /没有命中/,
+    '桶不同就不该命中：叠加是「与」不是「或」')
+})
+
+test('find --object 单独给就算给了筛选项', () => {
+  const root = makeObjectVault([{ rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' }])
+  assert.equal(run(['find', '--vault', root, '--object', '甲']).code, 0, '不该报「至少给一个筛选项」')
+})
+
+test('对象标识是可选字段，老卡不写也 check 通过', () => {
+  // 逼老库为补一个可选字段先跑 upgrade，代价大于收益；缺这行时由卡名推。
+  const root = makeObjectVault([
+    { rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' },
+    { rel: '故事零件/人物设定/卡-20261001-乙.md', 卡名: '乙', 对象标识: '乙的对象' },
+  ])
+  assert.equal(run(['check', '--vault', root]).code, 0)
+})
+
+
+test('01 采集的查重写明要用 --object 查同一对象', () => {
+  const text = workflow('01-采集.md')
+  assert.match(text, /--object/, '01 没接上 --object')
+  assert.match(text, /不要只用 \--keyword\ 查对象|关键词.*字面/, '没拦住用关键词查对象这个错法')
+  assert.match(text, /对象标识/, '没说要填对象标识')
+})
+
+test('01 采集的产物里保留了整表翻禁令', () => {
+  const text = workflow('01-采集.md')
+  assert.match(text, /不要整表翻/)
+})
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })

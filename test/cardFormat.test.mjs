@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   BUCKETS, FIELD_NAMES, FIELDS, INDEX_COLUMNS, PRIVATE_VALUES,
   REQUIRED_FIELDS, SOURCE_LEVELS, TIME_STATES, checkBasic, defaultPrivate, indexRow,
+  objectKey, objectKeyOf,
 } from '../skills/material-vault/scripts/cardFormat.mjs'
 
 const base = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -32,9 +33,39 @@ test('必填字段是字段表的子集，且每个字段都显式声明了必�
   assert.ok(REQUIRED_FIELDS.every((n) => FIELD_NAMES.includes(n)));
 })
 
-test('可选字段只剩出处链接：私有已随格式版本 2 转必填', () => {
+test('可选字段只有两个：出处链接与对象标识', () => {
+  // 出处链接可选：用户口述的素材没有链接，判据只要求「尽力补」。
+  // 对象标识可选：0.8.0 才引入，逼老库为补一个可选字段先跑 upgrade 不划算；
+  // 缺这行时由卡名推（见 objectKeyOf）。
   const optional = FIELD_NAMES.filter((n) => !REQUIRED_FIELDS.includes(n))
-  assert.deepEqual(optional, ['出处链接'])
+  assert.deepEqual(optional, ['出处链接', '对象标识'])
+})
+
+test('objectKey 把同一对象的写法归一，但不误并相近词', () => {
+  // 这组断言是 F-30 的地基：判重靠它，「五条悟」与「五条 悟」必须算同一个对象，
+  // 否则补卡规则形同虚设；而「长相思」与「长相守」必须算两个，否则会把该分开的卡并掉。
+  const same = [
+    ['五条悟', '五条 悟'],
+    ['五条悟', '五条悟（咒术回战）'],
+    ['五条悟', '  五条悟  '],
+    ['长夜', '《长夜》'],
+    ['Gojo Satoru', 'gojo satoru'],
+    ['ＧＯＪＯ', 'gojo'],
+  ]
+  for (const [a, b] of same) assert.equal(objectKey(a), objectKey(b), `「${a}」与「${b}」应算同一对象`)
+  const diff = [
+    ['长相思', '长相守'],
+    ['五条悟', '五条'],
+    ['长夜', '长夜行'],
+  ]
+  for (const [a, b] of diff) assert.notEqual(objectKey(a), objectKey(b), `「${a}」与「${b}」不能算同一对象`)
+})
+
+test('objectKeyOf 优先用对象标识，缺省时由卡名推', () => {
+  assert.equal(objectKeyOf({ 卡名: '随便什么', 对象标识: '五条悟' }), objectKey('五条悟'))
+  assert.equal(objectKeyOf({ 卡名: '《长夜》里的主角' }), objectKey('《长夜》里的主角'), '缺字段时用卡名')
+  assert.equal(objectKeyOf({}), '')
+  assert.equal(objectKeyOf(null), '')
 })
 
 test('私有默认值：S-01 为是，其余为否', () => {
