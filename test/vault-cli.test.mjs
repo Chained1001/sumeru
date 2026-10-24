@@ -1865,6 +1865,122 @@ test('01 采集的查重写明要用 --object 查同一对象', () => {
   assert.match(text, /对象标识/, '没说要填对象标识')
 })
 
+
+// —— 补卡不建新卡（F-30 批二）。三种结局都不是失败，但要说清是哪一种。
+function addRun(root, spec) {
+  const basic = { 卡名: spec.卡名, 桶: spec.桶 ?? '故事零件', 类型族: spec.族 ?? 'S-02 人物设定',
+    子类: spec.子类 ?? '角色卡', 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-01',
+    时效状态: '长期', 要点: '测', 私有: '否' }
+  if (spec.对象标识 !== undefined) basic.对象标识 = spec.对象标识
+  const data = {
+    relPath: `${basic.桶}/${basic.类型族}/卡-20261001-${basic.卡名}.md`,
+    basic,
+    dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
+    body: { 内容: '这是' + spec.卡名 + '的正文', 已用在: '', 补充记录: '' },
+  }
+  if (spec.补充内容 !== undefined) data.补充内容 = spec.补充内容
+  const f = join(root, '.in.json')
+  writeFileSync(f, JSON.stringify(data), 'utf8')
+  return run(['add', '--vault', root, '--card', f])
+}
+
+function cardTotal(root) {
+  const r = run(['overview', '--vault', root, '--json'])
+  return JSON.parse(r.stdout).data.total
+}
+
+function addVault() {
+  const root = tmp()
+  assert.equal(run(['init', '--vault', root]).code, 0)
+  return root
+}
+
+test('add 在库里没有这个对象时建新卡', () => {
+  const root = addVault()
+  const r = addRun(root, { 卡名: '五条悟', 对象标识: '五条悟' })
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /已建新卡/)
+  assert.equal(cardTotal(root), 1)
+})
+
+test('add 对同一对象再积累时不建第二张卡', () => {
+  // 这是 F-30 的整条需求。若这里建出第二张，「补卡不建新卡」就名存实亡。
+  const root = addVault()
+  addRun(root, { 卡名: '五条悟', 对象标识: '五条悟' })
+  const r = addRun(root, { 卡名: '五条 悟', 对象标识: '五条 悟' })
+  assert.equal(r.code, 0, '跳过不是失败')
+  assert.match(r.stdout, /没建新卡/)
+  assert.equal(cardTotal(root), 1, '同一对象不该有第二张卡')
+})
+
+test('add 有新内容时补进旧卡并记补充记录', () => {
+  const root = addVault()
+  addRun(root, { 卡名: '五条悟', 对象标识: '五条悟' })
+  const r = addRun(root, { 卡名: '五条悟（咒术回战）', 对象标识: '五条悟', 补充内容: '他戴眼罩是因为六眼消耗' })
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /新内容补进去了/)
+  assert.equal(cardTotal(root), 1, '补卡不建新卡')
+
+  const body = readFileSync(join(root, '故事零件/S-02 人物设定/卡-20261001-五条悟.md'), 'utf8')
+  assert.match(body, /他戴眼罩是因为六眼消耗/, '补充内容要真写进卡')
+  assert.match(body, /\d{4}-\d{2}-\d{2} 他戴眼罩/, '补充记录要带日期（版式约定）')
+})
+
+test('add 重复补同一段内容是幂等的', () => {
+  // 不幂等的话，补充记录会变成流水账，且卡会越写越肥。
+  const root = addVault()
+  addRun(root, { 卡名: '甲', 对象标识: '甲' })
+  addRun(root, { 卡名: '甲', 对象标识: '甲', 补充内容: '第一段补充' })
+  const again = addRun(root, { 卡名: '甲', 对象标识: '甲', 补充内容: '第一段补充' })
+  assert.match(again.stdout, /没建新卡/)
+  const body = readFileSync(join(root, '故事零件/S-02 人物设定/卡-20261001-甲.md'), 'utf8')
+  assert.equal((body.match(/第一段补充/g) || []).length, 1, '同一段内容不该写两遍')
+})
+
+test('add 把「内容已在正文里」也判为已有', () => {
+  const root = addVault()
+  addRun(root, { 卡名: '甲', 对象标识: '甲' })
+  const r = addRun(root, { 卡名: '甲', 对象标识: '甲', 补充内容: '这是甲的正文' })
+  assert.match(r.stdout, /没建新卡/, '正文里已有这段，就不算新内容')
+})
+
+test('add 认为跨类型不算重复，各自成卡并提示互相指认', () => {
+  // F-30 原话：同一个人跨类型不算重复，人物设定卡和作品切片卡是两回事，用关联卡互指。
+  // 若不分族，想给同一个对象建第二类卡会被静默挡掉。
+  const root = addVault()
+  addRun(root, { 卡名: '五条悟', 对象标识: '五条悟' })
+  const r = addRun(root, { 卡名: '五条悟', 对象标识: '五条悟', 桶: '作品案例', 族: 'S-09 作品切片', 子类: '人物' })
+  assert.match(r.stdout, /已建新卡/, '跨类型该建新卡')
+  assert.equal(cardTotal(root), 2)
+  assert.match(r.stdout, /别的类型族里已有卡/, '要提示跨类型已有卡')
+  assert.match(r.stdout, /关联卡/, '要提示把路径填进关联卡')
+})
+
+test('add 参数字法错误时退 2', () => {
+  const root = addVault()
+  assert.equal(run(['add', '--vault', root]).code, 2, '缺 --card 应为 2')
+  const f = join(root, '.bad.json')
+  writeFileSync(f, JSON.stringify({ basic: {}, dimension: {}, body: {} }), 'utf8')
+  assert.equal(run(['add', '--vault', root, '--card', f]).code, 2, '既无卡名也无对象标识应为 2')
+})
+
+test('add 走完 check 仍通过', () => {
+  const root = addVault()
+  addRun(root, { 卡名: '甲', 对象标识: '甲' })
+  addRun(root, { 卡名: '甲', 对象标识: '甲', 补充内容: '补充' })
+  assert.equal(run(['check', '--vault', root]).code, 0)
+})
+
+
+test('01 采集的落库写明走 add 而非直接 write', () => {
+  const text = workflow('01-采集.md')
+  assert.match(text, /add --card/, '01 没接上 add')
+  assert.match(text, /skipped/, '没写清「跳过」这一态')
+  assert.match(text, /appended/, '没写清「补卡」这一态')
+  assert.match(text, /跨类型不算重复/, '没写清跨类型放行')
+  assert.match(text, /如实告诉用户/, 'skipped 必须告知用户，否则会被当成漏采')
+})
+
 test('01 采集的产物里保留了整表翻禁令', () => {
   const text = workflow('01-采集.md')
   assert.match(text, /不要整表翻/)

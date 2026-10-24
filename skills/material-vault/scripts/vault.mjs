@@ -548,6 +548,113 @@ export function packCards(root, { paths, work, date = new Date() } = {}) {
 
   return { ok: true, issues: [], cards, excluded, content: out.join('\n') + '\n', stamp, title }
 }
+
+// —— 补卡不建新卡（F-30 批二）：一条命令完成「没新内容就跳过、有新内容就补进旧卡」。
+//
+// 为什么不靠流程自觉：J-05 要求采集前先查重，但查重是人的动作——采集员
+// 生成了卡、写进了库，事后没人会回头逐行比对。这里把判断做成命令：
+// 调用方给「这次要记的内容」，它自己决定是跳过、补卡，还是建新卡。
+//
+// 三种结果都不是错误（退出码都是 0），但要说清是哪一种：
+//   skipped —— 已有这张卡，且这次的内容它已经有了
+//   appended —— 已有这张卡，把新内容追加进「补充记录」
+//   created —— 库里还没有这张卡，按正常路径建一张
+// 只有参数不合法才是退出码 2。
+export function addMaterial(root, { card, date = new Date() } = {}) {
+  const input = typeof card === 'string' ? JSON.parse(readFileSync(card, 'utf8')) : card
+  if (!input || typeof input !== 'object') return { ok: false, issues: ['缺 --card：本次要记的卡内容（JSON 文件）'], action: null }
+
+  const key = objectKeyOf(input.basic)
+  if (!key) return { ok: false, issues: ['这张卡既没有「对象标识」也没有「卡名」，认不出是哪个对象'], action: null }
+
+  // 按对象键在库里找已有的卡，**只在同一类型族内找**。
+  //
+  // 跨类型不算重复（F-30 原话：同一个人跨类型不算重复，人物设定卡和作品切片卡
+  // 是两回事，用关联卡互指）。若不分族，「五条悟」有了人物设定卡之后，
+  // 想给他建一张作品切片卡就会被判成「已有」而跳过——那会把该建的卡挡在门外，
+  // 而且挡得毫无提示。只认活卡，不看已删卡片/。
+  const family = String(input.basic?.类型族 ?? '').trim()
+  const existing = []
+  for (const rel of listCards(root)) {
+    const c = readCard(join(root, rel))
+    if (objectKeyOf(c.basic) !== key) continue
+    // 同族才算重复。族名为空时（老卡或非法卡）也按同族处理，宁可多拦一次。
+    if (family && String(c.basic.类型族 ?? '').trim() && String(c.basic.类型族 ?? '').trim() !== family) continue
+    existing.push({ rel, card: c })
+  }
+
+  const stamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  const incoming = String(input.补充内容 ?? '').trim()
+
+  if (existing.length === 0) {
+    // 同族里没有，但别的族可能有同一个对象。跨类型各自成卡（F-30），并且要互指——
+    // 「关联卡」这一行得有人填，否则同一个角色在库里散成几张互不相识的卡，
+    // 写书时问「五条悟的料」只拿到其中一张。
+    const elsewhere = []
+    for (const rel of listCards(root)) {
+      const c = readCard(join(root, rel))
+      if (objectKeyOf(c.basic) !== key) continue
+      elsewhere.push({ rel, 类型族: c.basic.类型族 ?? '' })
+    }
+    // 没卡就正常建一张。补卡路径不负责猜路径与字段，交给 writeCard。
+    const written = writeCard(root, input)
+    if (!written.ok) return { ok: false, issues: written.issues, action: 'created' }
+    return {
+      ok: true,
+      issues: [],
+      action: 'created',
+      relPath: written.relPath,
+      // 跨类型已有卡时把它们的路径交回去，让调用方补「关联卡」。
+      relatedElsewhere: elsewhere,
+    }
+  }
+
+  // 已有卡：先看这次的内容是不是它已经有了。
+  // 判「已有」不只看补充记录：内容可能本来就在正文里，那也算有。
+  const target = existing[0]
+  const bodyText = Object.values(target.card.body ?? {}).join('\n')
+  if (incoming && bodyText.includes(incoming)) {
+    return {
+      ok: true,
+      issues: [],
+      action: 'skipped',
+      relPath: target.rel,
+      卡名: target.card.basic.卡名 ?? '',
+      reason: '这张卡上已经有这段内容了',
+      duplicates: existing.map((e) => e.rel),
+    }
+  }
+
+  // 没给新增内容，只是来问「有没有这张卡」——告知有，不写任何东西。
+  if (!incoming) {
+    return {
+      ok: true,
+      issues: [],
+      action: 'skipped',
+      relPath: target.rel,
+      卡名: target.card.basic.卡名 ?? '',
+      reason: '这张卡已在库里，本次没带新内容',
+      duplicates: existing.map((e) => e.rel),
+    }
+  }
+
+  // 有新内容：追加一行「日期 补了什么」，不建第二张卡。
+  // 补充记录是逐行记的，新的接在末尾（版式约定：一行一条，按时间顺序）。
+  const before = String(target.card.body.补充记录 ?? '').trim()
+  const entry = `${stamp} ${incoming}`
+  const after = before ? before + '\n' + entry : entry
+  const edited = cardEdit(root, { path: target.rel, field: '补充记录', value: after, section: SECTION_BODY })
+  if (!edited.ok) return { ok: false, issues: edited.issues, action: 'appended' }
+  return {
+    ok: true,
+    issues: [],
+    action: 'appended',
+    relPath: target.rel,
+    卡名: target.card.basic.卡名 ?? '',
+    entry,
+    duplicates: existing.map((e) => e.rel),
+  }
+}
 // —— 相对路径的把关：卡管理全部动作都按「库内的相对路径」定位，越界一律拒绝。
 // 理由与技术文档「写入库根之外的路径一律拒绝」一致：卡管理会移动与删除文件，
 // 路径越界在这里的代价是删掉库外的东西。
@@ -1129,11 +1236,12 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   overview          库况：各族卡数、最近收卡、待补与待复审数量（F-28）
   project           项目视图：列出某本书用过的卡（F-26）
   pack              把选中的卡打包成一份引用文件，私有卡一律不进（F-27）
+  add               补卡不建新卡：已有就跳过或补进旧卡，没有才建（F-30）
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
   --intro <一行>    init 时写进身份证的简介
-  --card <路径>     write 的卡内容 JSON 文件，- 表示从标准输入读
+  --card <路径>     write 与 add 的卡内容 JSON 文件，- 表示从标准输入读
   --path <相对路径> index add 要补进索引的卡；card 动作要操作的卡
   --field <字段名>  card edit 要改的行名，如 要点
   --value <新值>    card edit 改成什么
@@ -1160,7 +1268,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
 const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter', '--thin', '--paths', '--out', '--object'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview', 'project', 'pack'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview', 'project', 'pack', 'add'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
 export const CARD_ACTION_FLAGS = {
@@ -1408,6 +1516,47 @@ export function runCli(argv, io = {}) {
     emit(
       { ok: true, errors: [], data: { fingerprint: plan.fingerprint, total: plan.total, started: true, done: prog.done, remaining, vanished } },
       head + list + gone,
+    )
+    return 0
+  }
+
+  if (options.cmd === 'add') {
+    if (!options.card) {
+      emit({ ok: false, error: '缺 --card：本次要记的卡内容（JSON 文件）', data: {} }, '缺 --card：本次要记的卡内容（JSON 文件）')
+      return 2
+    }
+    const ad = addMaterial(root, { card: options.card })
+    if (!ad.ok) {
+      emit({ ok: false, error: ad.issues.join('；'), data: { action: ad.action } }, ad.issues.join('\n'))
+      return 2
+    }
+    // 三种结果都不是失败，但要说清是哪一种——用户得知道卡有没有多出来。
+    const out = []
+    if (ad.action === 'created') {
+      out.push('库里还没有这个对象，已建新卡：' + ad.relPath)
+    } else if (ad.action === 'skipped') {
+      out.push('已有这张卡，本次没建新卡：' + ad.relPath)
+      out.push('（' + ad.reason + '）')
+    } else {
+      out.push('已有这张卡，新内容补进去了：' + ad.relPath)
+      out.push('补充记录：' + ad.entry)
+    }
+    if (ad.duplicates && ad.duplicates.length > 1) {
+      out.push('')
+      out.push('注意：这个类型族里已经有 ' + ad.duplicates.length + ' 张同对象的卡，本次只动第一张：')
+      for (const d of ad.duplicates) out.push('- ' + d)
+      out.push('合并它们：card merge --from <多余的那张> --into <要留下的那张>')
+    }
+    if (ad.relatedElsewhere && ad.relatedElsewhere.length) {
+      // 跨类型各自成卡（F-30），但两张卡得互指，否则同一个对象在库里散成互不相识的几张。
+      out.push('')
+      out.push('这个对象在别的类型族里已有卡（跨类型不算重复，但要互相指认）：')
+      for (const e of ad.relatedElsewhere) out.push('- ' + e.类型族 + '：' + e.rel)
+      out.push('把路径填进两张卡的「关联卡」行，写书时问这个对象才能一次拿全。')
+    }
+    emit(
+      { ok: true, errors: [], data: { action: ad.action, relPath: ad.relPath, 卡名: ad.卡名, entry: ad.entry, duplicates: ad.duplicates ?? [], relatedElsewhere: ad.relatedElsewhere ?? [] } },
+      out.join('\n'),
     )
     return 0
   }
