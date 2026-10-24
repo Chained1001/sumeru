@@ -1271,7 +1271,7 @@ function makeReviewVault(cards) {
     writeFileSync(jf, JSON.stringify({
       relPath: c.rel,
       basic: { 卡名: c.卡名, 桶: '现实避坑', 类型族: 'S-10 现实见闻', 子类: c.子类,
-        来源: '测试', 出处链接: c.出处链接 ?? '', 来源等级: '单源',
+        来源: c.来源 ?? '测试', 出处链接: c.出处链接 ?? '', 来源等级: '单源',
         采集日期: c.采集日期, 时效状态: c.时效状态, 要点: '测' },
       dimension: { 事实要点: 'x', 来源与日期: 'x', 可改造方向: 'x', 时效状态: c.时效状态, 史料层次: '转引', 纪年: 'x' },
       body: { 内容: 'x', 已用在: '', 补充记录: '' },
@@ -1368,6 +1368,85 @@ test('06 浏览写清了复审与前几步的读法差别', () => {
 test('06 浏览把「把过期的都删了」推回 04', () => {
   const text = workflow('06-浏览.md')
   assert.match(text, /逐张确认|走 04/, '没拦住把复审清单当删除依据')
+})
+
+
+// —— 库况（F-28）。「待补」的定义来自 F-10：升级时机器补不出、填成
+// 「待补」的必填字段。这些用例钉住计数口径与「只读」。
+test('overview 报总卡数、各桶、各族与最近收卡日期', () => {
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '甲' },
+    { rel: '现实避坑/现实见闻/卡-20261005-乙.md', 采集日期: '2026-10-05', 时效状态: '长期', 子类: '职业细节', 卡名: '乙' },
+  ])
+  const r = run(['overview', '--vault', root])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /共 2 张卡/)
+  assert.match(r.stdout, /2026-10-05/, '最近收卡应取最大采集日期')
+  assert.match(r.stdout, /按桶：/)
+  assert.match(r.stdout, /按类型族：/)
+})
+
+test('overview 数「待补」字段：定义取自 F-10 的升级占位值', () => {
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '甲', 来源: '待补' },
+    { rel: '现实避坑/现实见闻/卡-20261001-乙.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '乙' },
+  ])
+  const r = run(['overview', '--vault', root])
+  assert.match(r.stdout, /待补 1 处/, '只有一张卡的来源是待补')
+  const payload = JSON.parse(run(['overview', '--vault', root, '--json']).stdout)
+  assert.equal(payload.data.pending.length, 1)
+  assert.equal(payload.data.pending[0].field, '来源')
+})
+
+test('overview 的待复审数与 review 一致', () => {
+  // 两处各算一遍若口径漂了，用户会看到两个互相矛盾的数。
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20260101-事.md', 采集日期: '2026-01-01', 时效状态: '现行', 子类: '时事热点', 卡名: '事' },
+  ])
+  const ov = JSON.parse(run(['overview', '--vault', root, '--json']).stdout)
+  const rev = JSON.parse(run(['review', '--vault', root, '--json']).stdout)
+  assert.equal(ov.data.review, rev.data.overdue.length)
+})
+
+test('overview 指出偏薄的族，--thin 可调', () => {
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '甲' },
+  ])
+  assert.match(run(['overview', '--vault', root]).stdout, /偏薄的族/, '1 张少于默认薄线 5')
+  assert.ok(!run(['overview', '--vault', root, '--thin', '1']).stdout.includes('偏薄的族'), '薄线降到 1 就不该再提示')
+})
+
+test('overview 是只读的：跑完索引不变', () => {
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '甲' },
+  ])
+  const before = readFileSync(join(root, 'INDEX.md'), 'utf8')
+  run(['overview', '--vault', root])
+  assert.equal(readFileSync(join(root, 'INDEX.md'), 'utf8'), before, 'overview 不该写任何文件')
+  assert.equal(run(['check', '--vault', root]).code, 0)
+})
+
+test('overview 在空库上如实说库是空的', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  const r = run(['overview', '--vault', root])
+  assert.equal(r.code, 0, '空库不是错误')
+  assert.match(r.stdout, /库是空的/)
+})
+
+
+test('06 浏览写了 overview 一步，并说清「待补」是什么', () => {
+  const text = workflow('06-浏览.md')
+  assert.match(text, /overview/, '06 没接上 overview')
+  assert.match(text, /待补/, '没写待补')
+  assert.match(text, /F-10|升级时机器补不出/, '没交代「待补」的定义出处，容易被理解成别的意思')
+  assert.match(text, /薄/, '没写偏薄')
+})
+
+test('06 浏览把「薄」说成提示而非错误，且薄线可调', () => {
+  const text = workflow('06-浏览.md')
+  assert.match(text, /不是错误|只是提示/, '薄不该被说成库有问题')
+  assert.match(text, /--thin/, '没给调薄线的办法')
 })
 
 

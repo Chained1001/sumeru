@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdir
 import { createHash } from 'node:crypto'
 import { join, dirname, relative, sep, basename, isAbsolute, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, FIELD_NAMES, BUCKETS, defaultPrivate } from './cardFormat.mjs'
+import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, FIELD_NAMES, REQUIRED_FIELDS, BUCKETS, defaultPrivate } from './cardFormat.mjs'
 
 export { FIELDS, INDEX_COLUMNS, defaultPrivate, checkBasic }
 // 格式版本：1 是老库（卡上无「私有」行），2 起「私有」必填。升级见 upgradeVault。
@@ -351,6 +351,70 @@ export function linkChecks(root, { months = REVIEW_MONTHS.默认, now = new Date
   }
   rows.sort((a, b) => b.闲置月数 - a.闲置月数 || a.相对路径.localeCompare(b.相对路径))
   return { months, rows }
+}
+
+// —— 库况（F-28）：一眼看各族卡数、最近收卡时间、待补与待复审数量，
+// 并指出偏薄的族。
+//
+// 「待补」不是新概念：F-10 的 upgrade 把机器补不出的必填字段填成「待补」，
+// 这里的「待补」就是数这种占位值还留在卡上的字段。原先 F-28 只说「待补」
+// 没给定义，容易被理解成别的意思（比如「还没想好写什么的卡」）。
+//
+// 「偏薄」的口径：该族卡数少于薄线（默认 5）。注册表把十一族分得很细，
+// 每族至少五张才够检索时挑得出东西；低于这个数只是提示，不是错误。
+export const THIN_THRESHOLD = 5
+
+export function vaultOverview(root, { thin = THIN_THRESHOLD, now = new Date() } = {}) {
+  const limit = Number.isFinite(Number(thin)) ? Number(thin) : THIN_THRESHOLD
+  const cards = []
+  for (const rel of listCards(root)) {
+    const card = readCard(join(root, rel))
+    cards.push({ rel, basic: card.basic })
+  }
+
+  // 各族卡数。按注册表顺序排，不按卡数排：族号是稳定的参照，
+  // 每次看都是同一顺序，才看得出哪一族在长、哪一族停了。
+  const byFamily = new Map()
+  const byBucket = new Map()
+  for (const { basic } of cards) {
+    const fam = String(basic.类型族 ?? '').trim() || '（未填）'
+    const bucket = String(basic.桶 ?? '').trim() || '（未填）'
+    byFamily.set(fam, (byFamily.get(fam) ?? 0) + 1)
+    byBucket.set(bucket, (byBucket.get(bucket) ?? 0) + 1)
+  }
+
+  // 待补：卡上任何必填字段的值还是「待补」。
+  const pending = []
+  for (const { rel, basic } of cards) {
+    for (const name of REQUIRED_FIELDS) {
+      if (String(basic[name] ?? '').trim() === '待补') pending.push({ 卡名: basic.卡名 ?? '', field: name, 相对路径: rel })
+    }
+  }
+
+  // 最近收卡：取「采集日期」最大的那天。日期解析不出的不参与。
+  let latest = null
+  for (const { basic } of cards) {
+    const d = String(basic.采集日期 ?? '').trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue
+    if (!latest || d > latest) latest = d
+  }
+
+  const review = reviewSuggest(root, { now })
+  const thinFamilies = [...byFamily.entries()]
+    .filter(([, n]) => n < limit)
+    .map(([family, n]) => ({ 类型族: family, 卡数: n }))
+    .sort((a, b) => a.卡数 - b.卡数 || a.类型族.localeCompare(b.类型族))
+
+  return {
+    total: cards.length,
+    byBucket: [...byBucket.entries()].map(([桶, n]) => ({ 桶, 卡数: n })),
+    byFamily: [...byFamily.entries()].map(([类型族, n]) => ({ 类型族, 卡数: n })),
+    latest,
+    pending,
+    review: review.rows.length,
+    thin: limit,
+    thinFamilies,
+  }
 }
 // —— 相对路径的把关：卡管理全部动作都按「库内的相对路径」定位，越界一律拒绝。
 // 理由与技术文档「写入库根之外的路径一律拒绝」一致：卡管理会移动与删除文件，
@@ -876,6 +940,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   retire            列出建议退休的卡：超期未用、未补过料（F-20）；只列不删
   used              给卡记一笔用在哪个作品第几章（F-21）
   review            列出该复审的卡：热梗 3 个月、时事 6 个月、其余时效敏感 12 个月（F-23）
+  overview          库况：各族卡数、最近收卡、待补与待复审数量（F-28）
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
@@ -894,6 +959,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --source <目录>   collect 的素材来源目录
   --fingerprint <值> collect mark 的源指纹，由 collect plan 给出
   --done <路径列表> collect mark 本批采完了哪些（相对源目录，逗号分隔）
+  --thin <张数>     overview 的偏薄线，默认 5
   --months <月数>   retire 的闲置线，默认 12
   --work <书名>     used 用在哪个作品
   --chapter <章>    used 第几章
@@ -902,8 +968,8 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --help, -h        显示本说明`
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
-const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review'])
+const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter', '--thin'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
 export const CARD_ACTION_FLAGS = {
@@ -1152,6 +1218,37 @@ export function runCli(argv, io = {}) {
       { ok: true, errors: [], data: { fingerprint: plan.fingerprint, total: plan.total, started: true, done: prog.done, remaining, vanished } },
       head + list + gone,
     )
+    return 0
+  }
+
+  if (options.cmd === 'overview') {
+    const o = vaultOverview(root, { thin: options.thin })
+    if (o.total === 0) {
+      emit({ ok: true, errors: [], data: o }, '库是空的，还没有任何卡。先按 01 采集一张，或按 07 收编一个文件夹。')
+      return 0
+    }
+    const out = []
+    out.push('共 ' + o.total + ' 张卡' + (o.latest ? '，最近收卡 ' + o.latest : ''))
+    out.push('')
+    out.push('按桶：' + o.byBucket.map((b) => b.桶 + ' ' + b.卡数).join('，'))
+    out.push('')
+    out.push('按类型族：')
+    for (const f of o.byFamily) out.push('- ' + f.类型族 + '：' + f.卡数 + ' 张')
+    out.push('')
+    // 待补与待复审分开报：前者要回来补字段，后者要回去核内容，两件事。
+    out.push('待补 ' + o.pending.length + ' 处（升级时机器补不出、填了「待补」的字段）')
+    if (o.pending.length) {
+      out.push(o.pending.slice(0, 10).map((p) => '- ' + p.卡名 + ' 的「' + p.field + '」\n  ' + p.相对路径).join('\n'))
+      if (o.pending.length > 10) out.push('- 另有 ' + (o.pending.length - 10) + ' 处，跑 review 可看全部')
+    }
+    out.push('')
+    out.push('待复审 ' + o.review + ' 张（跑 review 看清单）')
+    if (o.thinFamilies.length) {
+      out.push('')
+      out.push('偏薄的族（少于 ' + o.thin + ' 张，可以的话收一点）：')
+      for (const f of o.thinFamilies) out.push('- ' + f.类型族 + '：' + f.卡数 + ' 张')
+    }
+    emit({ ok: true, errors: [], data: o }, out.join('\n'))
     return 0
   }
 
