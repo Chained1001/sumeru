@@ -1260,6 +1260,117 @@ test('退休线的口径写进了流程：不用「检索命中」，用卡上�
 })
 
 
+// —— 复审清单（F-23）。周期口径 2026-10-24 定为按子类分档：
+// 热梗 3 个月、时事 6 个月、其余时效敏感 12 个月。这些用例钉住三件事：
+// 分档真的分开了、长期卡不进来、以及不声称探测过链接。
+function makeReviewVault(cards) {
+  const root = tmp()
+  assert.equal(run(['init', '--vault', root]).code, 0)
+  const jf = join(root, '.card.json')
+  for (const c of cards) {
+    writeFileSync(jf, JSON.stringify({
+      relPath: c.rel,
+      basic: { 卡名: c.卡名, 桶: '现实避坑', 类型族: 'S-10 现实见闻', 子类: c.子类,
+        来源: '测试', 出处链接: c.出处链接 ?? '', 来源等级: '单源',
+        采集日期: c.采集日期, 时效状态: c.时效状态, 要点: '测' },
+      dimension: { 事实要点: 'x', 来源与日期: 'x', 可改造方向: 'x', 时效状态: c.时效状态, 史料层次: '转引', 纪年: 'x' },
+      body: { 内容: 'x', 已用在: '', 补充记录: '' },
+    }), 'utf8')
+    const r = run(['write', '--vault', root, '--card', jf])
+    assert.equal(r.code, 0, '建卡失败 ' + c.rel + '：' + r.stdout + r.stderr)
+  }
+  return root
+}
+
+test('review 按子类分档算周期：热梗 3 个月、时事 6 个月、其余 12 个月', () => {
+  // 2026-10 为基准：热梗 4.8 个月已超期、时事 9.8 个月已超期、典故 33 个月已超期。
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20260601-梗.md', 采集日期: '2026-06-01', 时效状态: '现行', 子类: '网络热梗', 卡名: '梗' },
+    { rel: '现实避坑/现实见闻/卡-20260101-事.md', 采集日期: '2026-01-01', 时效状态: '现行', 子类: '时事热点', 卡名: '事' },
+    { rel: '现实避坑/现实见闻/卡-20240101-典.md', 采集日期: '2024-01-01', 时效状态: '待观察', 子类: '典故神话', 卡名: '典' },
+  ])
+  const r = run(['review', '--vault', root])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /^- 梗$/m, '热梗 4.8 个月该超 3 个月线')
+  assert.match(r.stdout, /^- 事$/m, '时事 9.8 个月该超 6 个月线')
+  assert.match(r.stdout, /^- 典$/m, '典故 33 个月该超 12 个月线')
+})
+
+test('review 不列还不到期的卡', () => {
+  // 同一张热点风格，只是采得近；若分档写错（把热梗当成 12 个月或反之）这条会挂。
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20260901-新梗.md', 采集日期: '2026-09-01', 时效状态: '现行', 子类: '网络热梗', 卡名: '新梗' },
+    { rel: '现实避坑/现实见闻/卡-20260801-近事.md', 采集日期: '2026-08-01', 时效状态: '现行', 子类: '时事热点', 卡名: '近事' },
+  ])
+  const r = run(['review', '--vault', root])
+  assert.ok(!/^- 新梗$/m.test(r.stdout), '热梗才 1 个月，不该列')
+  assert.ok(!/^- 近事$/m.test(r.stdout), '时事才 2 个月，不该列')
+})
+
+test('review 不列时效状态为长期的卡', () => {
+  // 长期卡没有保鲜问题。把它们列进来只会淹没真正该看的那些。
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20200101-长.md', 采集日期: '2020-01-01', 时效状态: '长期', 子类: '职业细节', 卡名: '长' },
+  ])
+  const r = run(['review', '--vault', root])
+  assert.match(r.stdout, /没有超期/, '长期卡再老也不该进复审清单')
+})
+
+test('review 报周期数值，并给 --json', () => {
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20200101-梗.md', 采集日期: '2020-01-01', 时效状态: '现行', 子类: '网络热梗', 卡名: '梗' },
+  ])
+  const r = run(['review', '--vault', root])
+  assert.match(r.stdout, /3 个月/, '该写清热梗的周期')
+  const payload = JSON.parse(run(['review', '--vault', root, '--json']).stdout)
+  assert.equal(payload.data.cycles.网络热梗, 3)
+  assert.equal(payload.data.cycles.时事热点, 6)
+  assert.equal(payload.data.cycles.默认, 12)
+})
+
+test('review 提链接但绝不声称链接已失效', () => {
+  // 本技能离线可用、零依赖，从没去探测过链接。说「已失效」就是编。
+  const root = makeReviewVault([
+    { rel: '现实避坑/现实见闻/卡-20240101-链.md', 采集日期: '2024-01-01', 时效状态: '长期',
+      子类: '职业细节', 卡名: '链', 出处链接: 'https://example.com/a' },
+  ])
+  const r = run(['review', '--vault', root])
+  assert.match(r.stdout, /https:\/\/example\.com\/a/, '该把链接列出来让人去点')
+  assert.ok(!/已失效/.test(r.stdout), '不能声称已验证链接失效——没探测过')
+  assert.match(r.stdout, /你自己点一下|自行/, '该明确请人自己确认')
+})
+
+
+// —— 06 的复审一步（F-23）。这里钉的是流程层承诺，脚本行为另有五条用例。
+test('06 浏览写了 review 一步与分档周期', () => {
+  const text = workflow('06-浏览.md')
+  assert.match(text, /review/, '06 没接上 review')
+  assert.match(text, /3 个月/, '没写热梗的周期')
+  assert.match(text, /6 个月/, '没写时事的周期')
+  assert.match(text, /长期/, '没写长期卡不算')
+})
+
+test('06 浏览写明不得声称链接已失效', () => {
+  // 本技能离线可用、零依赖，没探测过链接。这条守住「不编」。
+  const text = workflow('06-浏览.md')
+  assert.match(text, /不要说链接已失效/, '没拦住「已失效」这个未验证的结论')
+  assert.match(text, /自己点开|点一下/, '没请用户自行确认')
+})
+
+test('06 浏览写清了复审与前几步的读法差别', () => {
+  // 06 的招牌是「只读索引不读卡」，而复审必须读卡，不写清就自相矛盾。
+  const text = workflow('06-浏览.md')
+  assert.match(text, /时效状态/, '没写复审要读卡里的哪个字段')
+  assert.match(text, /索引里没有这两列|INDEX_COLUMNS/, '没解释为什么要读卡')
+  assert.match(text, /不手改任何文件/, '没守住「不写文件」')
+})
+
+test('06 浏览把「把过期的都删了」推回 04', () => {
+  const text = workflow('06-浏览.md')
+  assert.match(text, /逐张确认|走 04/, '没拦住把复审清单当删除依据')
+})
+
+
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })

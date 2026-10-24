@@ -290,6 +290,68 @@ export function markUsed(root, { path: relPath, work, chapter } = {}) {
   if (!edited.ok) return { ok: false, issues: edited.issues }
   return { ok: true, issues: [], relPath: rel, added: true, usedIn, entry }
 }
+
+// —— 复审清单（F-23）：列出时效敏感、且采集后久未核对的卡。
+//
+// 「多久算超期」此前全库没有定义，2026-10-24 定为按子类分档：
+// 网络热梗 3 个月、时事热点 6 个月、其余时效敏感子类 12 个月。
+// 热梗生命周期短，一个梗三个月就凉是常态；时事稍长；故不取一个数了事。
+//
+// 只对时效敏感的卡算：时效状态为「长期」的卡没有保鲜问题，
+// 把它们列进来只会淹没真正该看的那些。
+export const REVIEW_MONTHS = { 网络热梗: 3, 时事热点: 6, 默认: 12 }
+
+// 按子类取复审周期。子类名可能带后缀说明，用包含匹配。
+function reviewMonthsFor(子类) {
+  const s = String(子类 ?? '')
+  if (s.includes('网络热梗')) return { months: REVIEW_MONTHS.网络热梗, kind: '网络热梗' }
+  if (s.includes('时事热点')) return { months: REVIEW_MONTHS.时事热点, kind: '时事热点' }
+  return { months: REVIEW_MONTHS.默认, kind: '时效敏感' }
+}
+
+export function reviewSuggest(root, { now = new Date() } = {}) {
+  const rows = []
+  for (const rel of listCards(root)) {
+    const card = readCard(join(root, rel))
+    const state = String(card.basic.时效状态 ?? '').trim()
+    // 「长期」没有保鲜问题；空或取值不合法的交给 check 报，不混进复审清单。
+    if (!state || state === '长期') continue
+    const age = monthsSince(card.basic.采集日期, now)
+    if (age === null) continue
+    const { months, kind } = reviewMonthsFor(card.basic.子类)
+    if (age < months) continue
+    rows.push({
+      卡名: card.basic.卡名 ?? '',
+      子类: card.basic.子类 ?? '',
+      时效状态: state,
+      采集日期: card.basic.采集日期 ?? '',
+      超期月数: age - months,
+      复审周期: months,
+      分档: kind,
+      相对路径: rel,
+    })
+  }
+  // 超期最久的排最前。
+  rows.sort((a, b) => b.超期月数 - a.超期月数 || a.相对路径.localeCompare(b.相对路径))
+  return { cycles: REVIEW_MONTHS, rows }
+}
+
+// —— 链接待核（F-23 的后半句「链接已失效」）：本技能离线可用、零依赖，
+// 不能真的去探测链接。故只做「有出处链接、且卡已老」的提示，请人自己点一下，
+// 不在输出里说「已失效」——那是我们没验证过的话。
+export function linkChecks(root, { months = REVIEW_MONTHS.默认, now = new Date() } = {}) {
+  const rows = []
+  for (const rel of listCards(root)) {
+    const card = readCard(join(root, rel))
+    const link = String(card.basic.出处链接 ?? '').trim()
+    if (!link) continue
+    const age = monthsSince(card.basic.采集日期, now)
+    if (age === null || age < months) continue
+    rows.push({ 卡名: card.basic.卡名 ?? '', 采集日期: card.basic.采集日期 ?? '', 闲置月数: age, 出处链接: link, 相对路径: rel })
+  }
+  rows.sort((a, b) => b.闲置月数 - a.闲置月数 || a.相对路径.localeCompare(b.相对路径))
+  return { months, rows }
+}
 // —— 相对路径的把关：卡管理全部动作都按「库内的相对路径」定位，越界一律拒绝。
 // 理由与技术文档「写入库根之外的路径一律拒绝」一致：卡管理会移动与删除文件，
 // 路径越界在这里的代价是删掉库外的东西。
@@ -813,6 +875,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   collect status    查这份素材采到哪了、还剩哪些（F-22）
   retire            列出建议退休的卡：超期未用、未补过料（F-20）；只列不删
   used              给卡记一笔用在哪个作品第几章（F-21）
+  review            列出该复审的卡：热梗 3 个月、时事 6 个月、其余时效敏感 12 个月（F-23）
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
@@ -840,7 +903,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
 const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
 export const CARD_ACTION_FLAGS = {
@@ -1088,6 +1151,31 @@ export function runCli(argv, io = {}) {
     emit(
       { ok: true, errors: [], data: { fingerprint: plan.fingerprint, total: plan.total, started: true, done: prog.done, remaining, vanished } },
       head + list + gone,
+    )
+    return 0
+  }
+
+  if (options.cmd === 'review') {
+    const re = reviewSuggest(root)
+    const links = linkChecks(root)
+    const parts = []
+    if (re.rows.length === 0) {
+      parts.push('没有超期未复审的卡（周期：热梗 ' + re.cycles.网络热梗 + ' 个月、时事 ' + re.cycles.时事热点 + ' 个月、其余时效敏感 ' + re.cycles.默认 + ' 个月）')
+    } else {
+      parts.push('该复审 ' + re.rows.length + ' 张（热梗 ' + re.cycles.网络热梗 + ' 个月、时事 ' + re.cycles.时事热点 + ' 个月、其余时效敏感 ' + re.cycles.默认 + ' 个月）')
+      parts.push(re.rows.map((r) => '- ' + r.卡名 + '\n  ' + r.分档 + '；时效「' + r.时效状态 + '」，采集于 ' + r.采集日期 + '，超期 ' + r.超期月数 + ' 个月\n  ' + r.相对路径).join('\n'))
+    }
+    if (links.rows.length) {
+      parts.push('')
+      // 不说「失效」：本技能离线可用、零依赖，没去探测过任何链接，不能声称验证了。
+      parts.push('另 ' + links.rows.length + ' 张带出处链接的卡已超过 ' + links.months + ' 个月未核对，链接还能不能打开得你自己点一下：')
+      parts.push(links.rows.map((r) => '- ' + r.卡名 + '（' + r.采集日期 + '）\n  ' + r.出处链接).join('\n'))
+    }
+    parts.push('')
+    parts.push('复审的意思是：看一眼内容还准不准，把「时效状态」改成现状（现行／已过时／待观察），不平的按 04 改。')
+    emit(
+      { ok: true, errors: [], data: { cycles: re.cycles, overdue: re.rows, links: links.rows } },
+      parts.join('\n').replace(/\n\n\n/g, '\n\n'),
     )
     return 0
   }
