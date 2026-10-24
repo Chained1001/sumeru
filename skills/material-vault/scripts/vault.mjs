@@ -796,29 +796,55 @@ function matchesText(haystack, needle) {
   return String(haystack ?? '').toLowerCase().includes(String(needle).toLowerCase())
 }
 
+// 桶与类型族可以给多个值：「主角进诏狱」这类需求天然横跨历史细节、桥段、
+// 意象、避雷（F-25），逼用户一个一个族去查，等于把「一句话查多族」推回给他。
+// 把「甲,乙」拆成数组。全角逗号也认——中文输入法下很自然会打出「，」。
+function splitValues(value) {
+  if (value === undefined || value === null) return []
+  return String(value)
+    .split(/[,，]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
 export function findCards(root, { bucket, family, sub, keyword } = {}) {
   const filters = { bucket, family, sub, keyword }
-  const used = FIND_FILTERS.filter((k) => filters[k] !== undefined && String(filters[k]).trim() !== '')
-  if (used.length === 0) {
+  const buckets = splitValues(bucket)
+  const families = splitValues(family)
+
+  // 判「给没给筛选项」要看拆分后的结果，不能只看原字符串非空：
+  // `--bucket " , "` 的 trim 结果非空，但拆完一个值都没有，那样会当成
+  // 「给了桶筛」而实际上一个桶都没筛，结果就是整表翻——这正是要防的。
+  const effective = FIND_FILTERS.filter((k) => {
+    if (filters[k] === undefined) return false
+    if (k === 'bucket') return buckets.length > 0
+    if (k === 'family') return families.length > 0
+    return String(filters[k]).trim() !== ''
+  })
+  if (effective.length === 0) {
     return {
       ok: false,
       issues: [`查重至少要给一个筛选项（${FIND_FILTERS.map((k) => `--${k}`).join('、')}）：不给就成整表翻，库大了翻不动`],
       rows: [],
     }
   }
+  const used = effective
+
   // 桶名与类型族名先验：拼错时返回 0 行会被误读成「库里没有」，其实只是名字写错了。
-  if (bucket !== undefined && bucket !== '' && !BUCKETS.includes(bucket)) {
-    return { ok: false, issues: [`--bucket 只认四个桶：${BUCKETS.join('、')}；给的是「${bucket}」`], rows: [] }
+  // 多值时逐个验，错误信息要指出是哪一个写错了。
+  for (const b of buckets) {
+    if (!BUCKETS.includes(b)) return { ok: false, issues: [`--bucket 只认四个桶：${BUCKETS.join('、')}；给的是「${b}」`], rows: [] }
   }
 
   let rows = readIndex(root)
   // 逐级收窄：桶 → 类型族 → 子类 → 关键词。每级都在上一级的结果里筛，不重读索引。
-  if (bucket) rows = rows.filter((r) => r.桶 === bucket)
-  if (family) rows = rows.filter((r) => matchesText(r.类型族, family))
+  // 桶与类型族的多值是「或」的关系（命中任一个就算），同级内不叠加。
+  if (buckets.length) rows = rows.filter((r) => buckets.includes(r.桶))
+  if (families.length) rows = rows.filter((r) => families.some((f) => matchesText(r.类型族, f)))
   if (sub) rows = rows.filter((r) => matchesText(r.子类, sub))
   if (keyword) rows = rows.filter((r) => matchesText(r.要点, keyword) || matchesText(r.卡名, keyword))
 
-  return { ok: true, issues: [], rows, narrowed: used }
+  return { ok: true, issues: [], rows, narrowed: used, buckets, families }
 }
 
 // —— 接口五：把老库升到当前格式（F-10）。跨多个版本一次做完。
@@ -952,8 +978,8 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --section <节名>  card edit 改哪一节：基本信息（默认）、类型维度、正文
   --from <相对路径> card merge 被并入的卡
   --into <相对路径> card merge 的目标卡
-  --bucket <桶>     card move 挪到哪个桶；find 按桶收窄
-  --family <类型族> card move 挪到哪个类型族；find 按类型族收窄
+  --bucket <桶>     card move 挪到哪个桶；find 按桶收窄（可逗号分隔多个，如 故事零件,写作方法）
+  --family <类型族> card move 挪到哪个类型族；find 按类型族收窄（可逗号分隔多个，如 S-02,S-03）
   --sub <子类>      find 按子类收窄（含即命中）
   --keyword <文本>  find 按关键词收窄，比对卡名与要点（含即命中）
   --source <目录>   collect 的素材来源目录
@@ -1324,14 +1350,31 @@ export function runCli(argv, io = {}) {
       emit({ ok: false, error: result.issues.join('；'), data: {} }, result.issues.join('\n'))
       return 2
     }
+    // 多族命中时按族分组：平铺成一长串看不出「哪一族有料、哪一族空着」，
+    // 而后者正是「一句话查多族」要回答的东西。只查一族时分组表头是噪音，退回归。
+    // 判据用「给了多个类型族」而不是「结果里有多个族」：只给一个桶时结果里本来就
+    // 会有好几个族，那时分组只是把本来清楚的东西再切碎一遍。
+    const multiFamily = (result.families ?? []).length > 1
+    const byFamily = new Map()
+    for (const r of result.rows) {
+      const key = `${r.桶} / ${r.类型族}`
+      if (!byFamily.has(key)) byFamily.set(key, [])
+      byFamily.get(key).push(r)
+    }
     const head = result.rows.length
       ? `命中 ${result.rows.length} 张（收窄条件：${result.narrowed.join('、')}）`
       : `没有命中（收窄条件：${result.narrowed.join('、')}）——库里可能确实没有，也可能筛得太窄，可放宽再试`
-    const list = result.rows
-      .map((r) => `- ${r.卡名}\n  ${r.桶} / ${r.类型族} / ${r.子类}；要点：${r.要点}\n  ${r.相对路径}`)
-      .join('\n')
+    const list = [...byFamily.entries()]
+      .map(([group, items]) => {
+        const lines = items.map((r) => `- ${r.卡名}\n  子类：${r.子类}；要点：${r.要点}\n  ${r.相对路径}`)
+        return multiFamily ? `【${group}】${items.length} 张\n${lines.join('\n')}` : lines.join('\n')
+      })
+      .join('\n\n')
     // 查重结果为空不是失败：库里没有这张卡是正常结论，退出码仍是 0。
-    emit({ ok: true, errors: [], data: { count: result.rows.length, narrowed: result.narrowed, rows: result.rows } }, [head, list].filter(Boolean).join('\n'))
+    emit(
+      { ok: true, errors: [], data: { count: result.rows.length, narrowed: result.narrowed, rows: result.rows, buckets: result.buckets, families: result.families, groups: [...byFamily.keys()] } },
+      [head, list].filter(Boolean).join('\n'),
+    )
     return 0
   }
 

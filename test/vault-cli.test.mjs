@@ -1459,6 +1459,115 @@ test('review 在清单为空时不多嘴解释复审怎么做', () => {
   assert.match(r.stdout, /没有超期/)
   assert.ok(!r.stdout.includes('复审的意思是'), '空清单时不该附上这套说明')
 })
+// —— 一句话查多族（F-25）。桶与类型族可给多个值，同级内是「或」。
+test('find 的 --family 支持多值，命中跨族结果', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  const jf = join(root, '.c.json')
+  const mk = (rel, 卡名, 族, 子类) => {
+    writeFileSync(jf, JSON.stringify({
+      relPath: rel,
+      basic: { 卡名, 桶: '故事零件', 类型族: 族, 子类, 来源: '测试', 来源等级: '单源',
+        采集日期: '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' },
+      dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
+      body: { 内容: 'x', 已用在: '', 补充记录: '' },
+    }), 'utf8')
+    assert.equal(run(['write', '--vault', root, '--card', jf]).code, 0)
+  }
+  mk('故事零件/人物设定/卡-20261001-甲.md', '甲', 'S-02 人物设定', '弧光模板')
+  mk('故事零件/剧情桥段/卡-20261001-乙.md', '乙', 'S-03 剧情桥段', '开局钩子')
+  mk('故事零件/世界设定/卡-20261001-丙.md', '丙', 'S-04 世界设定', '力量体系')
+
+  const one = run(['find', '--vault', root, '--family', 'S-02'])
+  assert.match(one.stdout, /命中 1 张/)
+  const two = run(['find', '--vault', root, '--family', 'S-02,S-03'])
+  assert.match(two.stdout, /命中 2 张/, '给两个族应命中两族的卡')
+  assert.match(two.stdout, /甲/)
+  assert.match(two.stdout, /乙/)
+  assert.ok(!/^- 丙$/m.test(two.stdout), '没点 S-04 就不该带出丙')
+})
+
+test('find 的 --bucket 支持多值，且全角逗号也认', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  const jf = join(root, '.c.json')
+  const mk = (rel, 卡名, 桶, 族, 子类, dim) => {
+    writeFileSync(jf, JSON.stringify({
+      relPath: rel,
+      basic: { 卡名, 桶, 类型族: 族, 子类, 来源: '测试', 来源等级: '单源',
+        采集日期: '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' },
+      dimension: dim,
+      body: { 内容: 'x', 已用在: '', 补充记录: '' },
+    }), 'utf8')
+    assert.equal(run(['write', '--vault', root, '--card', jf]).code, 0)
+  }
+  mk('故事零件/人物设定/卡-20261001-甲.md', '甲', '故事零件', 'S-02 人物设定', '弧光模板',
+    { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' })
+  mk('写作方法/写作技巧/卡-20261001-乙.md', '乙', '写作方法', 'S-07 写作技巧', '叙事节奏',
+    { 底层意图: 'x', 适用条件: 'x', 操作步骤: 'x', 反例: 'x' })
+
+  const half = run(['find', '--vault', root, '--bucket', '故事零件'])
+  assert.match(half.stdout, /命中 1 张/)
+  const both = run(['find', '--vault', root, '--bucket', '故事零件,写作方法'])
+  assert.match(both.stdout, /命中 2 张/, '两个桶应各带出各自的卡')
+  const full = run(['find', '--vault', root, '--bucket', '故事零件，写作方法'])
+  assert.match(full.stdout, /命中 2 张/, '全角逗号也该认——中文输入法下很自然会打出来')
+})
+
+test('find 多族时按族分组，单族时不分组', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  const jf = join(root, '.c.json')
+  const mk = (rel, 卡名, 族, 子类) => {
+    writeFileSync(jf, JSON.stringify({
+      relPath: rel,
+      basic: { 卡名, 桶: '故事零件', 类型族: 族, 子类, 来源: '测试', 来源等级: '单源',
+        采集日期: '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' },
+      dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
+      body: { 内容: 'x', 已用在: '', 补充记录: '' },
+    }), 'utf8')
+    assert.equal(run(['write', '--vault', root, '--card', jf]).code, 0)
+  }
+  mk('故事零件/人物设定/卡-20261001-甲.md', '甲', 'S-02 人物设定', '弧光模板')
+  mk('故事零件/剧情桥段/卡-20261001-乙.md', '乙', 'S-03 剧情桥段', '开局钩子')
+
+  const multi = run(['find', '--vault', root, '--family', 'S-02,S-03'])
+  assert.match(multi.stdout, /【故事零件 \/ S-02 人物设定】/, '多族时该有分组表头')
+  assert.match(multi.stdout, /【故事零件 \/ S-03 剧情桥段】/)
+
+  // 只给一个桶时结果里本来就有好几个族；分组会把清楚的东西切碎，反而难读。
+  const single = run(['find', '--vault', root, '--bucket', '故事零件'])
+  assert.ok(!single.stdout.includes('【'), '单桶查询不该出现分组表头')
+})
+
+test('find 多值里有一个桶名拼错时报错，而不是当成空结果', () => {
+  // 拼错返回 0 行会被误读成「库里没有」，这是查重最危险的一种错。
+  const root = tmp()
+  run(['init', '--vault', root])
+  const r = run(['find', '--vault', root, '--bucket', '故事零件,不存在的桶'])
+  assert.equal(r.code, 2)
+  assert.match(r.stdout, /不存在的桶/, '要指出是哪个值写错了')
+  assert.ok(!r.stdout.includes('没有命中'), '拼错与「库里确实没有」必须分开')
+})
+
+test('find 的 --bucket 只给逗号空格时仍算没给筛选项', () => {
+  // 原实现只看原字符串 trim 后非空，" , " 会蒙混过关，结果就是整表翻。
+  const root = tmp()
+  run(['init', '--vault', root])
+  const r = run(['find', '--vault', root, '--bucket', ' , '])
+  assert.equal(r.code, 2, '拆完一个桶都没有，等于没给筛选项')
+})
+
+
+test('03 检索写了跨族查法，并要求空族如实说没查到', () => {
+  const text = workflow('03-检索.md')
+  assert.match(text, /一次给多个值|多值/, '没写多值查法')
+  assert.match(text, /逗号/, '没说多值怎么给')
+  assert.match(text, /空着的那族要如实说没查到|凑数/, '没拦住拿别族的卡凑数——这是多族查询最容易犯的错')
+  assert.match(text, /不要拆成跑好几遍|不拆成/, '没拦住拆成多遍查')
+})
+
+
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
