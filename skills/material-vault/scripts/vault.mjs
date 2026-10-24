@@ -644,14 +644,23 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
   // 得掉；后者看不见，会一直缺着。尺度与 J-26 同向——不确定时选能留下痕迹的那边。
   const target = existing[0]
   const bodySections = Object.values(target.card.body ?? {}).map((v) => String(v ?? '').trim())
+  // 补充行形如「2026-10-24 补了什么」。剥前缀时要**反复剥到剥不动**，只剥一层不够：
+  // 若补充内容本身以日期开头（「2026-10-24 那天他与宿傩交手」），卡上那行是
+  // 「2026-10-24 2026-10-24 那天…」。只剥一层得到「2026-10-24 那天…」，与补的
+  // 「2026-10-24 那天…」不等，于是判为新增又写一遍——同一段内容在卡里躺两行。
+  const stripStamp = (line) => {
+    let s = line.trim()
+    for (;;) {
+      const next = s.replace(/^\d{4}-\d{2}-\d{2}\s+/, '')
+      if (next === s) return s
+      s = next
+    }
+  }
   const alreadyThere = bodySections.some((text) => {
     if (!text) return false
     // 整节就是这条内容，或其中某一行与它逐字相同（补充记录是逐行记的）。
     if (text === incoming) return true
-    return text.split('\n').some((line) => {
-      const bare = line.trim().replace(/^\d{4}-\d{2}-\d{2}\s+/, '') // 去掉补充行的日期前缀
-      return bare === incoming
-    })
+    return text.split('\n').some((line) => stripStamp(line) === stripStamp(incoming))
   })
   if (incoming && alreadyThere) {
     return {
@@ -680,8 +689,13 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
 
   // 有新内容：追加一行「日期 补了什么」，不建第二张卡。
   // 补充记录是逐行记的，新的接在末尾（版式约定：一行一条，按时间顺序）。
+  //
+  // 内容本身已带日期时（「2026-01-01 旧事」）不再加今天的日期：版式要的是
+  // 「一行一条、日期在前」，前面已经有一个日期就满足了。硬加会写成
+  // 「2026-10-24 2026-01-01 旧事」——读者分不清哪个是采集日、哪个是事件日，
+  // 而且这行也再认不出是「旧事」那条了。
   const before = String(target.card.body.补充记录 ?? '').trim()
-  const entry = `${stamp} ${incoming}`
+  const entry = /^\d{4}-\d{2}-\d{2}\s+\S/.test(incoming) ? incoming : `${stamp} ${incoming}`
   const after = before ? before + '\n' + entry : entry
   const edited = cardEdit(root, { path: target.rel, field: '补充记录', value: after, section: SECTION_BODY })
   if (!edited.ok) return { ok: false, issues: edited.issues, action: 'appended' }
