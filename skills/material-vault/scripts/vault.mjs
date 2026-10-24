@@ -207,6 +207,89 @@ function listCards(root) {
   return out
 }
 
+
+// —— 退休建议（F-20 / Q-04 已决口径）：只列不删，谁退休由人拍板。
+// Q-04 原文的判据是「连续 12 个月未被检索命中」，但检索是入口里的对话动作、
+// 不落盘，系统里没有「命中」这件事可查（见 PRD 0.6.0 缺口 1）。改用卡上已有的、
+// 写在文件内容里的证据，不用文件 mtime——git 检出、拷贝、同步都会把 mtime 刷成
+// 当前时间，老卡会全看起来「刚动过」，退休线永远不触发。
+//
+// 三个证据同时成立才建议退休：采集日期超过 12 个月、已用在 为空、补充记录 为空。
+// 它判的是「一直没人动」，不是「质量差」——后者机器判不了，只能人看。
+export const RETIRE_MONTHS = 12
+
+// 从「采集日期」算月数。解析不出就返回 null（当它不到期），
+// 宁可漏列也不误列：格式不合规该由 check 报，不该混进退休清单。
+function monthsSince(dateText, now) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateText ?? '').trim())
+  if (!m) return null
+  const then = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  if (Number.isNaN(then.getTime())) return null
+  return (now.getFullYear() - then.getFullYear()) * 12 + (now.getMonth() - then.getMonth())
+}
+
+// 已用在 / 补充记录 是否有实质内容。空白、单个破折号、「无」「暂无」「待补」都算空：
+// 老卡上这类占位写法很常见，当成「用过」会让退休清单永远空着。
+function hasContent(value) {
+  const v = String(value ?? '').trim()
+  if (!v) return false
+  return !/^(?:[-—–\s]|无|暂无|待补)$/.test(v)
+}
+
+export function retireSuggest(root, { months = RETIRE_MONTHS, now = new Date() } = {}) {
+  const limit = Number.isFinite(Number(months)) ? Number(months) : RETIRE_MONTHS
+  const rows = []
+  for (const rel of listCards(root)) {
+    const card = readCard(join(root, rel))
+    const age = monthsSince(card.basic.采集日期, now)
+    if (age === null || age < limit) continue
+    if (hasContent(card.body.已用在) || hasContent(card.body.补充记录)) continue
+    rows.push({
+      卡名: card.basic.卡名 ?? '',
+      类型族: card.basic.类型族 ?? '',
+      采集日期: card.basic.采集日期 ?? '',
+      闲置月数: age,
+      相对路径: rel,
+    })
+  }
+  // 闲置最久的排最前：人拍板时先看最该退休的那几张。
+  rows.sort((a, b) => b.闲置月数 - a.闲置月数 || a.相对路径.localeCompare(b.相对路径))
+  return { limit, rows }
+}
+
+// —— 已用标记（F-21 / Q-05 已决口径）：记到「《书名》第 N 章」。
+// 做成追加而不是覆盖：一张卡可能被用进多部作品，覆盖会抹掉前一次的记录，
+// 而 F-21 的目的恰恰是「防同一个梗用两遍」——抹掉记录就正好破了它。
+export function markUsed(root, { path: relPath, work, chapter } = {}) {
+  const checked = cardRel(relPath)
+  if (!checked.ok) return { ok: false, issues: [checked.error] }
+  const rel = checked.rel
+
+  const title = String(work ?? '').trim().replace(/^《|》$/g, '')
+  if (!title) return { ok: false, issues: ['缺 --work：用在哪个作品，如 长夜（书名号可省）'] }
+  // 章节允许非数字：「番外」「楔子」也是章，只要求非空。
+  const chap = String(chapter ?? '').trim()
+  if (!chap) return { ok: false, issues: ['缺 --chapter：第几章，如 12 或 楔子'] }
+
+  const file = join(root, rel)
+  if (!existsSync(file)) return { ok: false, issues: ['卡不存在：' + rel] }
+
+  const card = readCard(file)
+  const entry = '《' + title + '》第 ' + chap + ' 章'
+  const before = String(card.body.已用在 ?? '').trim()
+  const already = before.split('；').map((s) => s.trim()).filter(Boolean)
+  if (already.includes(entry)) {
+    // 重复记同一处不是错误，但不必写第二遍。
+    return { ok: true, issues: [], relPath: rel, added: false, usedIn: before, entry }
+  }
+  const usedIn = already.length ? already.join('；') + '；' + entry : entry
+
+  // 走 cardEdit 而不是自己拼文件：改正文节的一行、同步索引它已经做了，
+  // 这里再写一遍就是第二份实现，迟早漂移。
+  const edited = cardEdit(root, { path: rel, field: '已用在', value: usedIn, section: SECTION_BODY })
+  if (!edited.ok) return { ok: false, issues: edited.issues }
+  return { ok: true, issues: [], relPath: rel, added: true, usedIn, entry }
+}
 // —— 相对路径的把关：卡管理全部动作都按「库内的相对路径」定位，越界一律拒绝。
 // 理由与技术文档「写入库根之外的路径一律拒绝」一致：卡管理会移动与删除文件，
 // 路径越界在这里的代价是删掉库外的东西。
@@ -728,6 +811,8 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   collect plan      清点来源目录：列出可采的文本文件与不采的其他文件，给源指纹（F-22）
   collect mark      把本批采完的文件记进进度，并报还剩多少（F-22）
   collect status    查这份素材采到哪了、还剩哪些（F-22）
+  retire            列出建议退休的卡：超期未用、未补过料（F-20）；只列不删
+  used              给卡记一笔用在哪个作品第几章（F-21）
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
@@ -746,13 +831,16 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --source <目录>   collect 的素材来源目录
   --fingerprint <值> collect mark 的源指纹，由 collect plan 给出
   --done <路径列表> collect mark 本批采完了哪些（相对源目录，逗号分隔）
+  --months <月数>   retire 的闲置线，默认 12
+  --work <书名>     used 用在哪个作品
+  --chapter <章>    used 第几章
   --dry-run         index rebuild 与 upgrade 只报清单，不落盘
   --json            输出单个 JSON 对象
   --help, -h        显示本说明`
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
-const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect'])
+const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
 export const CARD_ACTION_FLAGS = {
@@ -1000,6 +1088,44 @@ export function runCli(argv, io = {}) {
     emit(
       { ok: true, errors: [], data: { fingerprint: plan.fingerprint, total: plan.total, started: true, done: prog.done, remaining, vanished } },
       head + list + gone,
+    )
+    return 0
+  }
+
+  if (options.cmd === 'retire') {
+    const result = retireSuggest(root, { months: options.months })
+    if (result.rows.length === 0) {
+      // 空清单是正常结论，退出 0：没有该退休的卡不是失败。
+      emit(
+        { ok: true, errors: [], data: { limit: result.limit, count: 0, rows: [] } },
+        '没有建议退休的卡（判据：采集日期超过 ' + result.limit + ' 个月，且「已用在」与「补充记录」都为空）',
+      )
+      return 0
+    }
+    const head = '建议退休 ' + result.rows.length + ' 张（判据：采集超过 ' + result.limit + ' 个月，且「已用在」与「补充记录」都为空）'
+    const list = result.rows
+      .map((r) => '- ' + r.卡名 + '\n  ' + r.类型族 + '；采集于 ' + r.采集日期 + '，闲置 ' + r.闲置月数 + ' 个月\n  ' + r.相对路径)
+      .join('\n')
+    const tail = '\n\n这只是建议，删不删你定：要删用 card delete --path <相对路径>，要留就不必动它。'
+    emit(
+      { ok: true, errors: [], data: { limit: result.limit, count: result.rows.length, rows: result.rows } },
+      head + '\n' + list + tail,
+    )
+    return 0
+  }
+
+  if (options.cmd === 'used') {
+    const result = markUsed(root, { path: options.path, work: options.work, chapter: options.chapter })
+    if (!result.ok) {
+      emit({ ok: false, error: result.issues.join('；'), data: {} }, result.issues.join('\n'))
+      return 2
+    }
+    const msg = result.added
+      ? '已记：' + result.entry + '\n卡的「已用在」现在是：' + result.usedIn
+      : '这一处已经记过了：' + result.entry + '\n卡的「已用在」：' + result.usedIn
+    emit(
+      { ok: true, errors: [], data: { relPath: result.relPath, added: result.added, entry: result.entry, usedIn: result.usedIn } },
+      msg,
     )
     return 0
   }

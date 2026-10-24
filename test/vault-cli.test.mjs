@@ -1107,6 +1107,159 @@ test('示范库每张卡的维度行名与注册表该族要求逐行一致', ()
 })
 
 
+// —— 退休建议（F-20）与已用标记（F-21）。
+// 退休线的口径见 PRD 0.6.0 缺口 1：不用「检索命中」（系统不记），改用卡上
+// 写在文件内容里的三个证据。这些用例钉住的就是「证据成立才列」。
+function makeVault(cards) {
+  const root = tmp()
+  assert.equal(run(['init', '--vault', root]).code, 0)
+  const jf = join(root, '.card.json')
+  for (const c of cards) {
+    writeFileSync(jf, JSON.stringify({
+      relPath: c.rel,
+      basic: { 卡名: c.卡名, 桶: '写作方法', 类型族: 'S-07 写作技巧', 子类: '叙事节奏',
+        来源: '测试', 来源等级: '单源', 采集日期: c.采集日期, 时效状态: '长期', 要点: '测' },
+      dimension: { 底层意图: 'x', 适用条件: 'x', 操作步骤: 'x', 反例: 'x' },
+      body: { 内容: 'x', 已用在: c.已用在 ?? '', 补充记录: c.补充记录 ?? '' },
+    }), 'utf8')
+    const r = run(['write', '--vault', root, '--card', jf])
+    assert.equal(r.code, 0, '建卡失败 ' + c.rel + '：' + r.stdout + r.stderr)
+  }
+  return root
+}
+
+const OLD = '2024-01-01'   // 足够老
+const NEW = '2026-10-01'   // 刚采
+
+test('retire 只列超期且既没用过也没补过的卡', () => {
+  const root = makeVault([
+    { rel: '写作方法/写作技巧/卡-20240101-没用过.md', 采集日期: OLD, 卡名: '没用过' },
+    { rel: '写作方法/写作技巧/卡-20240101-用过.md', 采集日期: OLD, 卡名: '用过', 已用在: '《长夜》第 3 章' },
+    { rel: '写作方法/写作技巧/卡-20240101-补过.md', 采集日期: OLD, 卡名: '补过', 补充记录: '2025-05-01 补了个反例' },
+    { rel: '写作方法/写作技巧/卡-20261001-新.md', 采集日期: NEW, 卡名: '新卡' },
+  ])
+  const r = run(['retire', '--vault', root])
+  assert.equal(r.code, 0, '空清单也该退 0，没有该退休的卡不是失败')
+  assert.match(r.stdout, /没用过/)
+  assert.ok(!r.stdout.includes('- 用过\n'), '用过的卡不该建议退休')
+  assert.ok(!/^- 用过$/m.test(r.stdout), '用过的卡不该建议退休')
+  assert.ok(!/^- 补过$/m.test(r.stdout), '补过料的卡不该建议退休')
+  assert.ok(!/^- 新卡$/m.test(r.stdout), '没超期的不该列')
+})
+
+test('retire 把「无」「暂无」这类占位写法当成空的', () => {
+  // 老卡上这类占位很常见。若当成「用过」，退休清单会永远空着。
+  const root = makeVault([
+    { rel: '写作方法/写作技巧/卡-20240101-占位.md', 采集日期: OLD, 卡名: '占位', 已用在: '无', 补充记录: '暂无' },
+  ])
+  const r = run(['retire', '--vault', root])
+  assert.match(r.stdout, /占位/, '占位写法应算空，这张该被列出来')
+})
+
+test('retire 只建议不删：跑完卡还在', () => {
+  const root = makeVault([{ rel: '写作方法/写作技巧/卡-20240101-甲.md', 采集日期: OLD, 卡名: '甲' }])
+  run(['retire', '--vault', root])
+  assert.ok(existsSync(join(root, '写作方法/写作技巧/卡-20240101-甲.md')), 'retire 不得删卡，谁退休由人拍板')
+  assert.equal(run(['check', '--vault', root]).code, 0, 'retire 后库应仍然一致')
+})
+
+test('retire 的 --months 能调闲置线', () => {
+  const root = makeVault([{ rel: '写作方法/写作技巧/卡-20240101-甲.md', 采集日期: OLD, 卡名: '甲' }])
+  assert.match(run(['retire', '--vault', root]).stdout, /^建议退休 1 张/m)
+  const loose = run(['retire', '--vault', root, '--months', '1'])
+  assert.match(loose.stdout, /^建议退休 1 张/m, '1 个月线时这张当然还在')
+  const strict = run(['retire', '--vault', root, '--months', '999'])
+  assert.match(strict.stdout, /没有建议退休的卡/, '阈值拉高后就不该再列')
+})
+
+test('retire 的 --json 给出 count 与闲置月数', () => {
+  const root = makeVault([{ rel: '写作方法/写作技巧/卡-20240101-甲.md', 采集日期: OLD, 卡名: '甲' }])
+  const payload = JSON.parse(run(['retire', '--vault', root, '--json']).stdout)
+  assert.equal(payload.data.count, 1)
+  assert.equal(typeof payload.data.rows[0].闲置月数, 'number')
+})
+
+test('used 记到「《书名》第 N 章」并同步进卡', () => {
+  const root = makeVault([{ rel: '写作方法/写作技巧/卡-20261001-甲.md', 采集日期: NEW, 卡名: '甲' }])
+  const r = run(['used', '--vault', root, '--path', '写作方法/写作技巧/卡-20261001-甲.md', '--work', '长夜', '--chapter', '12'])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /《长夜》第 12 章/)
+  const text = readFileSync(join(root, '写作方法/写作技巧/卡-20261001-甲.md'), 'utf8')
+  assert.match(text, /- 已用在：《长夜》第 12 章/)
+})
+
+test('used 追加多部作品而不覆盖前一次记录', () => {
+  // F-21 的目的是「防同一个梗用两遍」；覆盖会正好抹掉证据，破掉这个目的。
+  const root = makeVault([{ rel: '写作方法/写作技巧/卡-20261001-甲.md', 采集日期: NEW, 卡名: '甲' }])
+  const rel = '写作方法/写作技巧/卡-20261001-甲.md'
+  run(['used', '--vault', root, '--path', rel, '--work', '长夜', '--chapter', '12'])
+  run(['used', '--vault', root, '--path', rel, '--work', '归墟', '--chapter', '楔子'])
+  const text = readFileSync(join(root, rel), 'utf8')
+  assert.match(text, /《长夜》第 12 章/)
+  assert.match(text, /《归墟》第 楔子 章/)
+})
+
+test('used 重复记同一处不写第二遍', () => {
+  const root = makeVault([{ rel: '写作方法/写作技巧/卡-20261001-甲.md', 采集日期: NEW, 卡名: '甲' }])
+  const rel = '写作方法/写作技巧/卡-20261001-甲.md'
+  assert.equal(run(['used', '--vault', root, '--path', rel, '--work', '长夜', '--chapter', '1']).code, 0)
+  const r2 = run(['used', '--vault', root, '--path', rel, '--work', '长夜', '--chapter', '1'])
+  assert.equal(r2.code, 0, '重复记不是错误')
+  const text = readFileSync(join(root, rel), 'utf8')
+  assert.equal((text.match(/《长夜》第 1 章/g) || []).length, 1, '同一处不该出现两次')
+})
+
+test('used 缺参数或路径越界时报参数错误', () => {
+  const root = makeVault([{ rel: '写作方法/写作技巧/卡-20261001-甲.md', 采集日期: NEW, 卡名: '甲' }])
+  const rel = '写作方法/写作技巧/卡-20261001-甲.md'
+  assert.equal(run(['used', '--vault', root, '--path', rel, '--chapter', '1']).code, 2, '缺 work 应为 2')
+  assert.equal(run(['used', '--vault', root, '--path', rel, '--work', '长夜']).code, 2, '缺 chapter 应为 2')
+  assert.equal(run(['used', '--vault', root, '--work', '长夜', '--chapter', '1']).code, 2, '缺 path 应为 2')
+  assert.equal(run(['used', '--vault', root, '--path', '../外面.md', '--work', 'x', '--chapter', '1']).code, 2, '越界应为 2')
+})
+
+test('标过已用的卡随即移出退休清单', () => {
+  const root = makeVault([{ rel: '写作方法/写作技巧/卡-20240101-甲.md', 采集日期: OLD, 卡名: '甲' }])
+  const rel = '写作方法/写作技巧/卡-20240101-甲.md'
+  assert.match(run(['retire', '--vault', root]).stdout, /^建议退休 1 张/m, '标之前该在清单里')
+  run(['used', '--vault', root, '--path', rel, '--work', '长夜', '--chapter', '5'])
+  assert.match(run(['retire', '--vault', root]).stdout, /没有建议退休的卡/, '标之后该移出清单')
+})
+
+test('采集日期解析不出的卡不进退休清单', () => {
+  // 格式不合规该由 check 报，不该混进退休清单里让人误删。
+  const root = makeVault([{ rel: '写作方法/写作技巧/卡-20240101-坏日期.md', 采集日期: '去年', 卡名: '坏日期' }])
+  const r = run(['retire', '--vault', root])
+  assert.ok(!r.stdout.includes('坏日期'), '日期解析不出就不该猜到它超期了')
+})
+
+
+// —— 04 里的退休与已用（F-20、F-21）。钉的是流程层承诺：
+// retire 只建议、人逐张点名才删；used 不填占位值。
+test('04 卡管理写了 retire 只建议不删、删要逐张点名', () => {
+  const text = workflow('04-卡管理.md')
+  assert.match(text, /retire/, '04 没接上 retire')
+  assert.match(text, /只列|只是建议/, '没写清 retire 只列建议')
+  assert.match(text, /逐张确认/, '没写删卡要逐张确认，容易被写成一句循环批量删')
+  assert.match(text, /不写一句循环|不写一句/, '没拦住批量删')
+})
+
+test('04 卡管理写了 used 记到书名与章节，且拒绝占位值', () => {
+  const text = workflow('04-卡管理.md')
+  assert.match(text, /used/, '04 没接上 used')
+  assert.match(text, /《.*》第 .*章|书名/, '没写清记到书名与章节（Q-05 已决口径）')
+  assert.match(text, /占位值/, '没拦住「某书」「未知章」这类占位写法')
+  assert.match(text, /追加/, '没写多部作品追加而非覆盖')
+})
+
+test('退休线的口径写进了流程：不用「检索命中」，用卡上的证据', () => {
+  const text = workflow('04-卡管理.md')
+  // Q-04 原判据是「未检索命中」，但系统不记命中，2026-10-24 改为卡上证据。
+  assert.ok(!/未被检索命中/.test(text), '流程里不该再写「未检索命中」，系统不记这件事')
+  assert.match(text, /很久没动|没动过|用过没|补过料/, '没写清实际用的是什么判据')
+})
+
+
 after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
