@@ -139,6 +139,80 @@ test('摘录与对话类素材的公开尺度写进了判据与版式', () => {
   assert.match(版式, /J-1[45]/, '版式没指向 J-14／J-15')
 })
 
+test('判据 J-26：证实有两条路，转载不凑数', () => {
+  // 这条挡两个错：(1) 循环印证——诺奖、重大事故的中文报道常是同一篇通稿的转载，
+  // 逐项列全来源域看着像多源，其实是一个证据；(2) 反过来把「拿到原始发布方」
+  // 也判成单源——诺奖官方接口是唯一原始发布方，它自己就够记证实。
+  // 第二条是跑 02 基线时撞出来的：初版只写「两源须不同主体」，照字面读会让官方接口降级。
+  const j26 = /^\| J-26 \|.*$/m.exec(judgeText)?.[0] ?? ''
+  assert.ok(j26, '判据缺 J-26')
+  assert.match(j26, /原始发布方/, 'J-26 没写「拿到原始发布方本身」这条路')
+  assert.match(j26, /独立/, 'J-26 没写「互相独立的主体」这条路')
+  assert.match(j26, /转载/, 'J-26 没写转载怎么算')
+  assert.match(j26, /口述/, 'J-26 没写口述能不能凑成证实')
+  assert.match(j26, /数据库|二次加工/, 'J-26 没把数据库二次加工排除在独立源之外')
+})
+
+test('判据 J-27：抓取成败看内容在不在手里，不看请求成不成功', () => {
+  const j27 = /^\| J-27 \|.*$/m.exec(judgeText)?.[0] ?? ''
+  assert.ok(j27, '判据缺 J-27（抓取成败判定）')
+  assert.match(j27, /200/, 'J-27 没点名 HTTP 200 不能单独当依据')
+  assert.match(j27, /逐字引/, 'J-27 没给出可操作的判断方法')
+})
+
+test('J-26、J-27 在依据区都有 E 号', () => {
+  for (const id of ['E-17', 'E-18']) {
+    assert.ok(new RegExp('^- ' + id + '：', 'm').test(judgeText), '依据区缺 ' + id)
+  }
+})
+
+test('调研员任务书区分「完全无网」与「单通道坏掉」', () => {
+  // 跑 02 基线时撞出来的：WebSearch 报 no API key，WebFetch 却全程能用。
+  // 旧停止条件写「检索连续失败 3 次即停」，照字面读应当停，但真停下来就采不到料了。
+  // 两者混成一条，会让调研员要么违规继续、要么明明能查却空手而归。
+  const agent = read('skills/material-vault/agents/调研采集.md')
+  assert.match(agent, /完全无联网/, '没写「完全无网」这个停止条件')
+  assert.match(agent, /单一通道/, '没区分「单通道坏掉」')
+  assert.match(agent, /不停止/, '没写明单通道坏掉时不停止')
+  assert.match(agent, /不能装作检索过/, '允许继续，但要求如实说明没检索过')
+})
+
+test('调研员失败回退写了官方页面读不出正文时改走机器可读端点', () => {
+  // 基线实况：nobelprize.org 的 HTML 页 HTTP 200 但正文被截断只剩标题，
+  // 真正拿到事实的是官方 JSON 接口。这正是 J-27 的应用场景。
+  const agent = read('skills/material-vault/agents/调研采集.md')
+  assert.match(agent, /J-27/, '失败回退没引用 J-27')
+  assert.match(agent, /数据接口|机器可读/, '没写改走官方数据接口这条路')
+})
+test('S-12 指向 J-26，不自己另定义一遍双源', () => {
+  // 定义只住一处：口径归判据，策略表只引用。
+  const s12 = /^\| S-12 \|.*$/m.exec(tierText)?.[0] ?? ''
+  assert.ok(s12, '权威源分级缺 S-12')
+  assert.match(s12, /J-26/, 'S-12 没指向 J-26')
+})
+
+test('调研员任务书写了「不同主体」与「循环印证」', () => {
+  // 调研员是唯一联网的口，它读不到就等于规则不存在。
+  const agent = read('skills/material-vault/agents/调研采集.md')
+  assert.match(agent, /不同主体/, '调研员任务书没写「不同主体」')
+  assert.match(agent, /同一个错误/, '调研员任务书没写循环印证这个反模式')
+  assert.match(agent, /J-26/, '调研员任务书没引用 J-26')
+})
+
+test('01 采集写了抓不到正文的判定方法', () => {
+  const wf = read('skills/material-vault/workflows/01-采集.md')
+  assert.match(wf, /J-27/, '01 没引用 J-27')
+  assert.match(wf, /逐字引/, '01 没给「能不能逐字引出来」这个判断方法')
+  assert.match(wf, /200/, '01 没点名 HTTP 200 不能单独当依据')
+})
+
+test('S-12 写明了两条记「证实」的路，不只剩「双源」一条', () => {
+  // 跑 02 基线时发现：只写「双源须不同主体」会让官方接口这条最硬的源降级。
+  const s12 = /^\| S-12 \|.*$/m.exec(tierText)?.[0] ?? ''
+  assert.ok(s12, '缺 S-12')
+  assert.match(s12, /原始发布方/, 'S-12 没写「拿到原始发布方」这条路')
+  assert.match(s12, /独立/, 'S-12 没写「两个互相独立的主体」这条路')
+})
 test('来源等级定义只住判据一处', () => {
   assert.ok(/来源等级取值口径/.test(judgeText), '判据缺来源等级口径行（唯一定义处）')
   assert.ok(!/＝关键事实双源一致/.test(tierText), '权威源分级又自己定义了一遍来源等级——改为指向 J-09')
