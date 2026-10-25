@@ -1152,7 +1152,7 @@ function indexCard(root, rel) {
 // 一个筛选项都不给时直接拒绝：那等于整表翻，而整表翻正是 F-19 要消掉的做法。
 // 关键词比对索引里的「要点」与「卡名」两列，够用来判断「库里有没有这个对象」；
 // 要判「内容是否重复」还得打开卡读正文，那一步交给调用方（流程文件里是采集流程第 4 步）。
-const FIND_FILTERS = ['bucket', 'family', 'sub', 'keyword', 'object']
+const FIND_FILTERS = ['bucket', 'family', 'sub', 'keyword', 'object', 'fromWork']
 
 function matchesText(haystack, needle) {
   return String(haystack ?? '').toLowerCase().includes(String(needle).toLowerCase())
@@ -1169,8 +1169,8 @@ function splitValues(value) {
     .filter(Boolean)
 }
 
-export function findCards(root, { bucket, family, sub, keyword, object } = {}) {
-  const filters = { bucket, family, sub, keyword, object }
+export function findCards(root, { bucket, family, sub, keyword, object, fromWork } = {}) {
+  const filters = { bucket, family, sub, keyword, object, fromWork }
   const buckets = splitValues(bucket)
   const families = splitValues(family)
 
@@ -1186,7 +1186,8 @@ export function findCards(root, { bucket, family, sub, keyword, object } = {}) {
   if (effective.length === 0) {
     return {
       ok: false,
-      issues: [`查重至少要给一个筛选项（${FIND_FILTERS.map((k) => `--${k}`).join('、')}）：不给就成整表翻，库大了翻不动`],
+      // 选项名要用命令行写法（fromWork → --from-work），否则提示里给的参数拼不出来。
+      issues: [`查重至少要给一个筛选项（${FIND_FILTERS.map((k) => `--${k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())}`).join('、')}）：不给就成整表翻，库大了翻不动`],
       rows: [],
     }
   }
@@ -1198,15 +1199,19 @@ export function findCards(root, { bucket, family, sub, keyword, object } = {}) {
     if (!BUCKETS.includes(b)) return { ok: false, issues: [`--bucket 只认四个桶：${BUCKETS.join('、')}；给的是「${b}」`], rows: [] }
   }
 
-  // --object 走的是卡的「对象标识」或卡名，而索引里没有「对象标识」这一列
-  // （加进去会让老索引的行被 readIndex 静默跳过，代价太大）。故这条筛法读卡。
+  // --object 与 --from-work 都得读卡：索引里既没有「对象标识」也没有「出自作品」列
+  // （加进去会让老索引的行被 readIndex 静默跳过，代价太大）。故这两条筛法读卡。
   // 其余筛法仍只读索引；两者叠加时先按索引收窄，再读剩下的那几张卡。
   const key = objectKey(object)
-  if (key) {
+  const work = objectKey(fromWork)
+  if (key || work) {
     const rows = []
     for (const rel of listCards(root)) {
       const card = readCard(join(root, rel))
-      if (objectKeyOf(card.basic) !== key) continue
+      // 两条「读卡」筛法各判各的，同时给就是「与」。
+      // --from-work 用 objectKey 归一化：「幻界战线」「《幻界战线》」「幻界 战线」算同一部。
+      if (key && objectKeyOf(card.basic) !== key) continue
+      if (work && objectKey(card.basic.出自作品) !== work) continue
       // 其余筛选项也要满足：--bucket 故事零件 --object 五条悟 是两个条件的「与」。
       if (buckets.length && !buckets.includes(card.basic.桶)) continue
       if (families.length && !families.some((f) => matchesText(card.basic.类型族, f))) continue
@@ -1221,9 +1226,10 @@ export function findCards(root, { bucket, family, sub, keyword, object } = {}) {
         时效: card.basic.时效状态 ?? '',
         相对路径: rel,
         对象标识: card.basic.对象标识 ?? '',
+        出自作品: card.basic.出自作品 ?? '',
       })
     }
-    return { ok: true, issues: [], rows, narrowed: used, buckets, families, object: key }
+    return { ok: true, issues: [], rows, narrowed: used, buckets, families, object: key, fromWork: work }
   }
 
   let rows = readIndex(root)
@@ -1377,6 +1383,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --sub <子类>      find 按子类收窄（含即命中）
   --keyword <文本>  find 按关键词收窄，比对卡名与要点（含即命中）
   --object <对象名> find 按对象标识收窄：认得出「同一对象」的卡（F-30），如 --object 五条悟
+  --from-work <作品名> find 按「出自作品」收窄：一部作品的卡分散在多个族，用这条一次全取（F-32），如 --from-work 幻界战线
   --source <目录>   collect 的素材来源目录
   --fingerprint <值> collect mark 的源指纹，由 collect plan 给出
   --done <路径列表> collect mark 本批采完了哪些（相对源目录，逗号分隔）
@@ -1391,7 +1398,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --help, -h        显示本说明`
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
-const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter', '--thin', '--paths', '--out', '--object'])
+const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter', '--thin', '--paths', '--out', '--object', '--from-work'])
 const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview', 'project', 'pack', 'add', 'dupes'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
@@ -1867,7 +1874,7 @@ export function runCli(argv, io = {}) {
   }
 
   if (options.cmd === 'find') {
-    const result = findCards(root, { bucket: options.bucket, family: options.family, sub: options.sub, keyword: options.keyword, object: options.object })
+    const result = findCards(root, { bucket: options.bucket, family: options.family, sub: options.sub, keyword: options.keyword, object: options.object, fromWork: options['from-work'] })
     if (!result.ok) {
       emit({ ok: false, error: result.issues.join('；'), data: {} }, result.issues.join('\n'))
       return 2

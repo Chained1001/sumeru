@@ -217,3 +217,41 @@ test('来源等级定义只住判据一处', () => {
   assert.ok(/来源等级取值口径/.test(judgeText), '判据缺来源等级口径行（唯一定义处）')
   assert.ok(!/＝关键事实双源一致/.test(tierText), '权威源分级又自己定义了一遍来源等级——改为指向 J-09')
 })
+
+test('判据 J-28：收集作品时卡上要写「出自作品」，且与对象标识分清', () => {
+  // F-32 的地基。若 J-28 被悄悄删掉，「出自作品」就成了没人要求的字段，
+  // 下次有人嫌它多余就会顺手删——那正是「按作品收集」失效的开始。
+  const judge = read('skills/material-vault/references/入库判据.md')
+  const j28 = /^\| J-28 \|.*$/m.exec(judge)?.[0] ?? ''
+  assert.ok(j28, '判据缺 J-28')
+  assert.match(j28, /出自作品/, 'J-28 没写要填「出自作品」')
+  assert.match(j28, /对象标识/, 'J-28 没写清与「对象标识」的区别')
+  assert.match(j28, /from-work/, 'J-28 没给核对方法')
+})
+
+test('按作品收集策略文件存在，七维清单齐全，且与注册表的族号对得上', () => {
+  // 策略是查表，表里写的族号若与注册表漂移，用户点名的作品会收错族。
+  const policy = read('skills/material-vault/references/按作品收集策略.md')
+  const registry = read('skills/material-vault/references/类型注册表.md')
+
+  for (const dim of ['人设', '世界设定', '剧情桥段', '金句', '意象氛围', '起名', '作品切片']) {
+    assert.ok(policy.includes(dim), `策略缺「${dim}」这一维`)
+  }
+  // 策略里出现的每个 S-xx 都必须真实存在。注意 S- 号段跨两个文件：
+  // S-01..S-11 在类型注册表（类型族），S-12..S-17 在权威源分级（取源策略）。
+  // 只查注册表会把合法的 S-16（地域政策）误判成编造。
+  const tier = read('skills/material-vault/references/权威源分级.md')
+  const cited = [...policy.matchAll(/S-(\d\d)/g)].map((m) => m[1])
+  assert.ok(cited.length >= 7, `策略只提到 ${cited.length} 个族，七维至少七个`)
+  for (const n of new Set(cited)) {
+    const re = new RegExp(`^\\| S-${n} \\|`, 'm')
+    assert.ok(re.test(registry) || re.test(tier), `策略引用了不存在的 S-${n}`)
+  }
+})
+
+test('策略写明「先结构后文字」与「默认先试采三张」', () => {
+  // 这两条是用户 2026-10-25 明确要的默认行为，删掉就退回「问一堆问题」。
+  const policy = read('skills/material-vault/references/按作品收集策略.md')
+  assert.match(policy, /先结构后文字/, '策略缺「先结构后文字」的顺序')
+  assert.match(policy, /试采三张/, '策略缺「默认先试采三张」')
+})

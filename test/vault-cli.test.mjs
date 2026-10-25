@@ -1872,6 +1872,7 @@ function addRun(root, spec) {
     子类: spec.子类 ?? '角色卡', 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-01',
     时效状态: '长期', 要点: '测', 私有: '否' }
   if (spec.对象标识 !== undefined) basic.对象标识 = spec.对象标识
+  if (spec.出自作品 !== undefined) basic.出自作品 = spec.出自作品
   const data = {
     relPath: `${basic.桶}/${basic.类型族}/卡-20261001-${basic.卡名}.md`,
     basic,
@@ -2078,6 +2079,7 @@ function writeDupCard(root, rel, spec) {
     子类: spec.子类 ?? '角色卡', 来源: '测试', 来源等级: '单源',
     采集日期: spec.采集日期 ?? '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' }
   if (spec.对象标识 !== undefined) basic.对象标识 = spec.对象标识
+  if (spec.出自作品 !== undefined) basic.出自作品 = spec.出自作品
   const f = join(root, '.d.json')
   writeFileSync(f, JSON.stringify({
     relPath: rel, basic,
@@ -2182,3 +2184,48 @@ after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
 
+test('find --from-work 一次取出同一部作品跨族的卡', () => {
+  // F-32：一部作品的料分散在人设、世界设定、剧情桥段好几个族里。
+  // 没有这条筛法，用户收完三十张后没法回答「幻界战线我收过什么」。
+  const root = addVault()
+  addRun(root, { 卡名: '雷欧', 对象标识: '雷欧', 出自作品: '幻界战线' })
+  addRun(root, { 卡名: '扎普', 对象标识: '扎普', 出自作品: '幻界战线' })
+  addRun(root, { 卡名: '赫尔沙雷姆兹', 对象标识: '赫尔沙雷姆兹', 出自作品: '幻界战线', 桶: '故事零件', 族: 'S-04 世界设定', 子类: '底层规则' })
+  addRun(root, { 卡名: '路飞', 对象标识: '路飞', 出自作品: '海贼王' })
+
+  const r = run(['find', '--vault', root, '--from-work', '幻界战线'])
+  assert.equal(r.code, 0)
+  const found = (r.stdout.match(/卡-2026\d+-/g) || []).length
+  assert.match(r.stdout, /雷欧/)
+  assert.match(r.stdout, /扎普/)
+  assert.match(r.stdout, /赫尔沙雷姆兹/, '跨族的那张也要取到')
+  assert.doesNotMatch(r.stdout, /路飞/, '别的作品的卡不该串进来')
+})
+
+test('find --from-work 归一化书名号与空格', () => {
+  // 与 objectKey 同一套归一化：「幻界战线」「《幻界战线》」「幻界 战线」是一部作品。
+  // 不归一化的话，用户换个写法就查不到自己刚收的卡。
+  const root = addVault()
+  addRun(root, { 卡名: '雷欧', 对象标识: '雷欧', 出自作品: '幻界战线' })
+  for (const w of ['《幻界战线》', '幻界 战线']) {
+    const r = run(['find', '--vault', root, '--from-work', w])
+    assert.match(r.stdout, /雷欧/, `用「${w}」应查得到`)
+  }
+})
+
+test('find 不给筛选项时仍报参数错误，--from-work 也算一个筛选项', () => {
+  // 防的是「整表翻」：--from-work 加进来后，它必须被认成有效筛选项，
+  // 否则这条命令会被误判成「什么筛都没给」而拒绝执行。
+  const root = addVault()
+  addRun(root, { 卡名: '雷欧', 对象标识: '雷欧', 出自作品: '幻界战线' })
+  assert.equal(run(['find', '--vault', root]).code, 2, '什么都不给应退 2')
+  assert.equal(run(['find', '--vault', root, '--from-work', '幻界战线']).code, 0, '只给 --from-work 应可用')
+})
+
+test('add 建的卡会保留「出自作品」', () => {
+  // 字段加了但写卡时丢掉，等于没加——这与 0.8.2 修过的「建卡丢补充内容」同类。
+  const root = addVault()
+  addRun(root, { 卡名: '雷欧', 对象标识: '雷欧', 出自作品: '幻界战线' })
+  const body = readFileSync(join(root, '故事零件/S-02 人物设定/卡-20261001-雷欧.md'), 'utf8')
+  assert.match(body, /出自作品：幻界战线/)
+})

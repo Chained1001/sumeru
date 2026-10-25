@@ -33,12 +33,14 @@ test('必填字段是字段表的子集，且每个字段都显式声明了必�
   assert.ok(REQUIRED_FIELDS.every((n) => FIELD_NAMES.includes(n)));
 })
 
-test('可选字段只有两个：出处链接与对象标识', () => {
+test('可选字段只有三个：出处链接、对象标识与出自作品', () => {
   // 出处链接可选：用户口述的素材没有链接，判据只要求「尽力补」。
   // 对象标识可选：0.8.0 才引入，逼老库为补一个可选字段先跑 upgrade 不划算；
   // 缺这行时由卡名推（见 objectKeyOf）。
+  // 出自作品可选：0.9.0 才引入，同理；留空即「不特别属于某部作品」，
+  // 原创点子与现实见闻本来就没有出处作品，不能逼它们填。
   const optional = FIELD_NAMES.filter((n) => !REQUIRED_FIELDS.includes(n))
-  assert.deepEqual(optional, ['出处链接', '对象标识'])
+  assert.deepEqual(optional, ['出处链接', '对象标识', '出自作品'])
 })
 
 test('objectKey 把同一对象的写法归一，但不误并相近词', () => {
