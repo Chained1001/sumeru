@@ -255,3 +255,14 @@ test('策略写明「先结构后文字」与「默认先试采三张」', () =>
   assert.match(policy, /先结构后文字/, '策略缺「先结构后文字」的顺序')
   assert.match(policy, /试采三张/, '策略缺「默认先试采三张」')
 })
+
+test('策略的来源等级口径与 J-09 一致，并交代了别名怎么办', () => {
+  // 试采时发现两处策略自身的错，各留一条防线：
+  // 1) 初版写「二手 → 线索」，与 J-09「二次加工 → 单源」冲突，会把百科材料降得过低。
+  // 2) 《幻界战线》与《血界战线》是同一部，而 --from-work 不认别名，不交代就会查不全。
+  const policy = read('skills/material-vault/references/按作品收集策略.md')
+  assert.match(policy, /单源/, '策略没写百科/wiki 记单源')
+  assert.match(policy, /二次加工/, '策略没与 J-09 的「二次加工」口径对齐')
+  assert.match(policy, /别名|译名/, '策略没交代一部作品多个译名时怎么办')
+  assert.match(policy, /固定用一个名字|统一/, '策略没给出「固定用一个名字」的做法')
+})
