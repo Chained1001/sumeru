@@ -418,3 +418,21 @@ test('卡点表引用的每个细分，注册表里都得有：否则 cardpoints
   }
   assert.equal(missing.size, 0, `卡点表用了注册表里没有的细分：${[...missing].join('、')}`)
 })
+
+test('S-07 写作技巧要有「正例」：反例只说不行，正例才是能照抄的那段', () => {
+  // 一个想学转场的人，看到「反例：不要用『与此同时』硬切」——他知道不该做什么，
+  // 但不知道那个转场该长什么样。技巧卡没有一句可模仿的样例，等于给地图不给坐标。
+  // 「操作步骤」是抽象的，「正例」才落到可以照着写。
+  const reg = read('skills/material-vault/references/类型注册表.md')
+  const row = /^\| S-07 \|.*$/m.exec(reg)?.[0] ?? ''
+  assert.ok(row, '注册表缺 S-07')
+  const dims = /按维度抽取：([^；|]+)/.exec(row)?.[1] ?? ''
+  assert.match(dims, /正例/, `S-07 的维度里没有「正例」：${dims}`)
+  assert.match(dims, /反例/, 'S-07 该同时有正例与反例')
+  // 先正后反：先让他知道该怎么做，再说别怎么做
+  assert.ok(dims.indexOf('正例') < dims.indexOf('反例'), '「正例」该排在「反例」之前')
+
+  // 采集员的实际任务书也要跟着说，否则他会漏填
+  const guide = read('skills/material-vault/agents/写作方法采集.md')
+  assert.match(guide, /正例/, '写作方法采集.md 没要求交正例')
+})
