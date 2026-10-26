@@ -1,12 +1,12 @@
 // 卡格式契约（cardFormat）：「什么算合法的一张卡」的唯一事实源。
 // 基本信息字段、索引列、三个枚举的取值都只写在这里；assets/素材卡版式.md 是它的投影，
 // 二者由 test/cardFormat.test.mjs 钉住。加减字段只改本文件，同次改版式与那条测试。
-// 正文节与类型维度节不在此约束：字段随类型族与素材变化，透传即可。
+// 正文节与类型维度节不在此约束：字段随类型与素材变化，透传即可。
 export const FIELDS = [
   { 名: '卡名', 必填: true },
-  { 名: '桶', 必填: true },
-  { 名: '类型族', 必填: true },
-  { 名: '子类', 必填: true },
+  { 名: '大类', 必填: true },
+  { 名: '类型', 必填: true },
+  { 名: '细分', 必填: true },
   { 名: '来源', 必填: true },
   // 用户口述的素材没有出处链接，判据只要求采集员「尽力补」，故此字段可选。
   { 名: '出处链接', 必填: false },
@@ -23,7 +23,7 @@ export const FIELDS = [
   //
   // 与「对象标识」不是一回事，别混：对象标识认的是「这张卡讲谁」——一张人设卡讲
   // 某个角色，对象标识写那个角色；而同一个角色往往出现在多部作品里。出自作品认的是
-  // 「这条料从哪来」——「幻界战线」的三十张卡分属人设、桥段、设定等好几个族，
+  // 「这条料从哪来」——「幻界战线」的三十张卡分属人设、桥段、设定等好几个类型，
   // 对象标识各不相同，但都出自同一部作品。收一部作品的全部维度时，只有这个字段能把
   // 它们串起来，回答「幻界战线我收过什么」。
   //
@@ -37,17 +37,17 @@ export const REQUIRED_FIELDS = FIELDS.filter((f) => f.必填).map((f) => f.名)
 export const FIELD_NAMES = FIELDS.map((f) => f.名)
 
 // 索引一行一卡。列名与卡的字段名不完全相同，映射见 indexRow。
-export const INDEX_COLUMNS = ['卡名', '桶', '类型族', '子类', '要点', '时效', '相对路径']
+export const INDEX_COLUMNS = ['卡名', '大类', '类型', '细分', '要点', '时效', '相对路径']
 
 export const BUCKETS = ['故事零件', '写作方法', '作品案例', '现实避坑']
 export const TIME_STATES = ['现行', '已过时', '待观察', '长期']
 export const SOURCE_LEVELS = ['证实', '单源', '线索', '存疑']
 export const PRIVATE_VALUES = ['是', '否']
 
-// 私有默认值：故事零件·开书点子（S-01）默认「是」，其余族默认「否」。
-// 按类型族编号前缀判，不建「族 → 默认值」表：多一行表就多一处可漂移。
-export function defaultPrivate(类型族) {
-  return /^S-01(?!\d)/.test(String(类型族 ?? '').trim()) ? '是' : '否'
+// 私有默认值：故事零件·开书点子（S-01）默认「是」，其余类型默认「否」。
+// 按类型编号前缀判，不建「类型 → 默认值」表：多一行表就多一处可漂移。
+export function defaultPrivate(类型) {
+  return /^S-01(?!\d)/.test(String(类型 ?? '').trim()) ? '是' : '否'
 }
 
 // 对象标识的归一化。F-30 要机器判断「这两张卡是不是同一个对象」，
@@ -115,6 +115,6 @@ export function checkBasic(basic) {
   if (b.时效状态 && !TIME_STATES.includes(b.时效状态)) issues.push(`时效状态「${b.时效状态}」不合法（J-06）`)
   if (b.来源等级 && !SOURCE_LEVELS.includes(b.来源等级)) issues.push(`来源等级「${b.来源等级}」不合法（J-09）`)
   if (b.私有 && !PRIVATE_VALUES.includes(b.私有)) issues.push(`私有「${b.私有}」不合法（J-13）`)
-  if (b.桶 && !BUCKETS.includes(b.桶)) issues.push(`桶「${b.桶}」不合法`)
+  if (b.大类 && !BUCKETS.includes(b.大类)) issues.push(`大类「${b.大类}」不合法`)
   return issues
 }

@@ -11,7 +11,11 @@ import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, FIELD_NAMES, REQUIRED_FIEL
 
 export { FIELDS, INDEX_COLUMNS, defaultPrivate, checkBasic }
 // 格式版本：1 是老库（卡上无「私有」行），2 起「私有」必填。升级见 upgradeVault。
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
+
+// 卡字段改名映射：旧名 → 新名。只在 upgrade 里用一次，认完即删。
+// 老库不认这一步的话，旧名会被当成退役字段挪进「历史字段」，值还在但不是真字段。
+export const RENAMED_FIELDS = { 桶: '大类', 类型族: '类型', 子类: '细分' }
 // 删卡的回收区（F-14）：卡按原相对路径移进来，restore 时原样移回。里面的东西不算活卡。
 export const TRASH_DIR = '已删卡片'
 
@@ -127,7 +131,7 @@ function writeAtomic(file, text) {
 // 校验不通过时不写任何文件，把问题交回调用方。
 // 已存在的卡按「盘上的值打底、本次传入的覆盖」合并：升级器写进「历史字段」的老值、
 // 以及调用方这次没提及的字段，都不会因为重写而蒸发。
-// 卡的相对路径必须是「两层目录 + 一个文件名」：`<桶>/<类型族>/卡-<YYYYMMDD>-<短名>.md`。
+// 卡的相对路径必须是「两层目录 + 一个文件名」：`<大类>/<类型>/卡-<YYYYMMDD>-<短名>.md`。
 //
 // 为什么卡死在两层：库里同时存在两条遍历——`find` 走 INDEX、`overview` 走 `listCards`，
 // 而 `listCards` 只下钻两层（`if (depth > 2) return`）。路径再深一层，两条路就看见
@@ -136,10 +140,10 @@ function writeAtomic(file, text) {
 export function cardPathProblem(rel) {
   const parts = String(rel ?? '').split(/[\\/]+/).filter(Boolean)
   if (parts.length !== 3) {
-    return `卡的相对路径必须是「<桶>/<类型族>/卡-<日期>-<短名>.md」——两层目录加一个文件名；给的是 ${parts.length} 段：${rel}`
+    return `卡的相对路径必须是「<大类>/<类型>/卡-<日期>-<短名>.md」——两层目录加一个文件名；给的是 ${parts.length} 段：${rel}`
   }
   if (!BUCKETS.includes(parts[0])) {
-    return `路径第一层必须是四个桶之一（${BUCKETS.join('、')}），给的是「${parts[0]}」`
+    return `路径第一层必须是四个大类之一（${BUCKETS.join('、')}），给的是「${parts[0]}」`
   }
   return ''
 }
@@ -152,10 +156,10 @@ export function writeCard(root, card, relPath) {
   const provided = card?.basic ?? {}
   const basic = { ...(existing?.basic ?? {}) }
   for (const [k, v] of Object.entries(provided)) basic[k] = v
-  if (!basic.私有) basic.私有 = defaultPrivate(basic.类型族)
+  if (!basic.私有) basic.私有 = defaultPrivate(basic.类型)
 
   const issues = checkBasic(basic)
-  if (!rel) issues.push('缺相对路径：卡放在 <桶>/<类型族>/卡-<YYYYMMDD>-<短名>.md')
+  if (!rel) issues.push('缺相对路径：卡放在 <大类>/<类型>/卡-<YYYYMMDD>-<短名>.md')
   else {
     const pathProblem = cardPathProblem(rel)
     if (pathProblem) issues.push(pathProblem)
@@ -217,7 +221,7 @@ export function checkVault(root) {
   return issues
 }
 
-// 库里的卡：<桶>/<类型族>/卡-*.md。只认这个形状，其它文件不是卡。
+// 库里的卡：<大类>/<类型>/卡-*.md。只认这个形状，其它文件不是卡。
 // 已删卡片/ 是删卡的回收站（F-14），里面的东西不是活卡，不扫。
 function listCards(root) {
   const out = []
@@ -273,7 +277,7 @@ export function retireSuggest(root, { months = RETIRE_MONTHS, now = new Date() }
     if (hasContent(card.body.已用在) || hasContent(card.body.补充记录)) continue
     rows.push({
       卡名: card.basic.卡名 ?? '',
-      类型族: card.basic.类型族 ?? '',
+      类型: card.basic.类型 ?? '',
       采集日期: card.basic.采集日期 ?? '',
       闲置月数: age,
       相对路径: rel,
@@ -320,17 +324,17 @@ export function markUsed(root, { path: relPath, work, chapter } = {}) {
 
 // —— 复审清单（F-23）：列出时效敏感、且采集后久未核对的卡。
 //
-// 「多久算超期」此前全库没有定义，2026-10-24 定为按子类分档：
-// 网络热梗 3 个月、时事热点 6 个月、其余时效敏感子类 12 个月。
+// 「多久算超期」此前全库没有定义，2026-10-24 定为按细分分档：
+// 网络热梗 3 个月、时事热点 6 个月、其余时效敏感细分 12 个月。
 // 热梗生命周期短，一个梗三个月就凉是常态；时事稍长；故不取一个数了事。
 //
 // 只对时效敏感的卡算：时效状态为「长期」的卡没有保鲜问题，
 // 把它们列进来只会淹没真正该看的那些。
 export const REVIEW_MONTHS = { 网络热梗: 3, 时事热点: 6, 默认: 12 }
 
-// 按子类取复审周期。子类名可能带后缀说明，用包含匹配。
-function reviewMonthsFor(子类) {
-  const s = String(子类 ?? '')
+// 按细分取复审周期。细分名可能带后缀说明，用包含匹配。
+function reviewMonthsFor(细分) {
+  const s = String(细分 ?? '')
   if (s.includes('网络热梗')) return { months: REVIEW_MONTHS.网络热梗, kind: '网络热梗' }
   if (s.includes('时事热点')) return { months: REVIEW_MONTHS.时事热点, kind: '时事热点' }
   return { months: REVIEW_MONTHS.默认, kind: '时效敏感' }
@@ -345,11 +349,11 @@ export function reviewSuggest(root, { now = new Date() } = {}) {
     if (!state || state === '长期') continue
     const age = monthsSince(card.basic.采集日期, now)
     if (age === null) continue
-    const { months, kind } = reviewMonthsFor(card.basic.子类)
+    const { months, kind } = reviewMonthsFor(card.basic.细分)
     if (age < months) continue
     rows.push({
       卡名: card.basic.卡名 ?? '',
-      子类: card.basic.子类 ?? '',
+      细分: card.basic.细分 ?? '',
       时效状态: state,
       采集日期: card.basic.采集日期 ?? '',
       超期月数: age - months,
@@ -380,15 +384,15 @@ export function linkChecks(root, { months = REVIEW_MONTHS.默认, now = new Date
   return { months, rows }
 }
 
-// —— 库况（F-28）：一眼看各族卡数、最近收卡时间、待补与待复审数量，
-// 并指出偏薄的族。
+// —— 库况（F-28）：一眼看各类型卡数、最近收卡时间、待补与待复审数量，
+// 并指出偏薄的类型。
 //
 // 「待补」不是新概念：F-10 的 upgrade 把机器补不出的必填字段填成「待补」，
 // 这里的「待补」就是数这种占位值还留在卡上的字段。原先 F-28 只说「待补」
 // 没给定义，容易被理解成别的意思（比如「还没想好写什么的卡」）。
 //
-// 「偏薄」的口径：该族卡数少于薄线（默认 5）。注册表把十一族分得很细，
-// 每族至少五张才够检索时挑得出东西；低于这个数只是提示，不是错误。
+// 「偏薄」的口径：该类型卡数少于薄线（默认 5）。注册表把十一个类型分得很细，
+// 每类型至少五张才够检索时挑得出东西；低于这个数只是提示，不是错误。
 export const THIN_THRESHOLD = 5
 
 export function vaultOverview(root, { thin = THIN_THRESHOLD, now = new Date() } = {}) {
@@ -399,13 +403,13 @@ export function vaultOverview(root, { thin = THIN_THRESHOLD, now = new Date() } 
     cards.push({ rel, basic: card.basic })
   }
 
-  // 各族卡数。按注册表顺序排，不按卡数排：族号是稳定的参照，
-  // 每次看都是同一顺序，才看得出哪一族在长、哪一族停了。
+  // 各类型卡数。按注册表顺序排，不按卡数排：类型号是稳定的参照，
+  // 每次看都是同一顺序，才看得出哪一个类型在长、哪一个类型停了。
   const byFamily = new Map()
   const byBucket = new Map()
   for (const { basic } of cards) {
-    const fam = String(basic.类型族 ?? '').trim() || '（未填）'
-    const bucket = String(basic.桶 ?? '').trim() || '（未填）'
+    const fam = String(basic.类型 ?? '').trim() || '（未填）'
+    const bucket = String(basic.大类 ?? '').trim() || '（未填）'
     byFamily.set(fam, (byFamily.get(fam) ?? 0) + 1)
     byBucket.set(bucket, (byBucket.get(bucket) ?? 0) + 1)
   }
@@ -429,13 +433,13 @@ export function vaultOverview(root, { thin = THIN_THRESHOLD, now = new Date() } 
   const review = reviewSuggest(root, { now })
   const thinFamilies = [...byFamily.entries()]
     .filter(([, n]) => n < limit)
-    .map(([family, n]) => ({ 类型族: family, 卡数: n }))
-    .sort((a, b) => a.卡数 - b.卡数 || a.类型族.localeCompare(b.类型族))
+    .map(([family, n]) => ({ 类型: family, 卡数: n }))
+    .sort((a, b) => a.卡数 - b.卡数 || a.类型.localeCompare(b.类型))
 
   return {
     total: cards.length,
-    byBucket: [...byBucket.entries()].map(([桶, n]) => ({ 桶, 卡数: n })),
-    byFamily: [...byFamily.entries()].map(([类型族, n]) => ({ 类型族, 卡数: n })),
+    byBucket: [...byBucket.entries()].map(([大类, n]) => ({ 大类, 卡数: n })),
+    byFamily: [...byFamily.entries()].map(([类型, n]) => ({ 类型, 卡数: n })),
     latest,
     pending,
     review: review.rows.length,
@@ -470,27 +474,27 @@ export function projectView(root, { work } = {}) {
     if (hits.length === 0) continue
     rows.push({
       卡名: card.basic.卡名 ?? '',
-      桶: card.basic.桶 ?? '',
-      类型族: card.basic.类型族 ?? '',
-      子类: card.basic.子类 ?? '',
+      大类: card.basic.大类 ?? '',
+      类型: card.basic.类型 ?? '',
+      细分: card.basic.细分 ?? '',
       要点: card.basic.要点 ?? '',
       用在哪: hits.join('；'),
       相对路径: rel,
     })
   }
 
-  // 按桶再按族排：看「这本书用过的卡都集中在哪类素材」时，顺序稳定比命中顺序有用。
-  rows.sort((a, b) => a.桶.localeCompare(b.桶) || a.类型族.localeCompare(b.类型族) || a.相对路径.localeCompare(b.相对路径))
+  // 按大类再按类型排：看「这本书用过的卡都集中在哪类素材」时，顺序稳定比命中顺序有用。
+  rows.sort((a, b) => a.大类.localeCompare(b.大类) || a.类型.localeCompare(b.类型) || a.相对路径.localeCompare(b.相对路径))
 
   const byBucket = new Map()
-  for (const r of rows) byBucket.set(r.桶, (byBucket.get(r.桶) ?? 0) + 1)
+  for (const r of rows) byBucket.set(r.大类, (byBucket.get(r.大类) ?? 0) + 1)
 
   return {
     ok: true,
     issues: [],
     work: title,
     rows,
-    byBucket: [...byBucket.entries()].map(([桶, n]) => ({ 桶, 卡数: n })),
+    byBucket: [...byBucket.entries()].map(([大类, n]) => ({ 大类, 卡数: n })),
   }
 }
 
@@ -550,7 +554,7 @@ export function packCards(root, { paths, work, date = new Date() } = {}) {
     out.push('')
     out.push(`## ${c.basic.卡名 ?? '（无卡名）'}`)
     out.push('')
-    out.push(`- 类型：${c.basic.类型族 ?? ''} / ${c.basic.子类 ?? ''}`)
+    out.push(`- 类型：${c.basic.类型 ?? ''} / ${c.basic.细分 ?? ''}`)
     out.push(`- 要点：${c.basic.要点 ?? ''}`)
     out.push(`- 时效：${c.basic.时效状态 ?? ''}；来源等级：${c.basic.来源等级 ?? ''}`)
     if (c.basic.来源) out.push(`- 来源：${c.basic.来源}`)
@@ -662,19 +666,19 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
   const key = objectKeyOf(input.basic)
   if (!key) return { ok: false, issues: ['这张卡既没有「对象标识」也没有「卡名」，认不出是哪个对象'], action: null, code: 'E_ARGS' }
 
-  // 按对象键在库里找已有的卡，**只在同一类型族内找**。
+  // 按对象键在库里找已有的卡，**只在同一类型内找**。
   //
   // 跨类型不算重复（F-30 原话：同一个人跨类型不算重复，人物设定卡和作品切片卡
-  // 是两回事，用关联卡互指）。若不分族，「五条悟」有了人物设定卡之后，
+  // 是两回事，用关联卡互指）。若不分类型，「五条悟」有了人物设定卡之后，
   // 想给他建一张作品切片卡就会被判成「已有」而跳过——那会把该建的卡挡在门外，
   // 而且挡得毫无提示。只认活卡，不看已删卡片/。
-  const family = String(input.basic?.类型族 ?? '').trim()
+  const family = String(input.basic?.类型 ?? '').trim()
   const existing = []
   for (const rel of listCards(root)) {
     const c = readCard(join(root, rel))
     if (objectKeyOf(c.basic) !== key) continue
-    // 同族才算重复。族名为空时（老卡或非法卡）也按同族处理，宁可多拦一次。
-    if (family && String(c.basic.类型族 ?? '').trim() && String(c.basic.类型族 ?? '').trim() !== family) continue
+    // 同类型才算重复。类型名为空时（老卡或非法卡）也按同类型处理，宁可多拦一次。
+    if (family && String(c.basic.类型 ?? '').trim() && String(c.basic.类型 ?? '').trim() !== family) continue
     existing.push({ rel, card: c })
   }
 
@@ -682,14 +686,14 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
   const incoming = String(input.补充内容 ?? '').trim()
 
   if (existing.length === 0) {
-    // 同族里没有，但别的族可能有同一个对象。跨类型各自成卡（F-30），并且要互指——
+    // 同类型里没有，但别的类型可能有同一个对象。跨类型各自成卡（F-30），并且要互指——
     // 「关联卡」这一行得有人填，否则同一个角色在库里散成几张互不相识的卡，
     // 写书时问「五条悟的料」只拿到其中一张。
     const elsewhere = []
     for (const rel of listCards(root)) {
       const c = readCard(join(root, rel))
       if (objectKeyOf(c.basic) !== key) continue
-      elsewhere.push({ rel, 类型族: c.basic.类型族 ?? '' })
+      elsewhere.push({ rel, 类型: c.basic.类型 ?? '' })
     }
     // 没卡就正常建一张。补卡路径不负责猜路径与字段，交给 writeCard。
     //
@@ -709,7 +713,7 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
 
     // 跨类型互指：A-10 明确要求「跨类型各自成卡并互指关联」。这里不是猜——
     // 新旧两张卡的路径都是确定的，把对方的路径写进各自的「关联卡」行。
-    // 只在两张卡的族确实不同时做；同族已被上面的查重挡住，走不到这里。
+    // 只在两张卡的类型确实不同时做；同类型已被上面的查重挡住，走不到这里。
     const linked = []
     if (elsewhere.length) {
       const mine = (input.body?.关联卡 ?? '').trim()
@@ -823,7 +827,7 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
 // 同对象双卡」——全库唯一一条靠人眼在索引里找双卡的硬判据。采集时最容易
 // 失守的恰恰是它：卡一张张建出来，没人会回头逐行比对「这两张是不是同一个人」。
 //
-// 分组键是「类型族 + 对象键」，不是对象键单用：跨类型各自成卡（F-30），
+// 分组键是「类型 + 对象键」，不是对象键单用：跨类型各自成卡（F-30），
 // 同一个人在人物设定与作品切片里各有一张是对的，不是重复。
 export function dupesReport(root) {
   const groups = new Map()
@@ -831,9 +835,9 @@ export function dupesReport(root) {
     const card = readCard(join(root, rel))
     const key = objectKeyOf(card.basic)
     if (!key) continue
-    const family = String(card.basic.类型族 ?? '').trim()
+    const family = String(card.basic.类型 ?? '').trim()
     const gk = family + '\u0000' + key
-    if (!groups.has(gk)) groups.set(gk, { 类型族: family, 对象键: key, 卡: [] })
+    if (!groups.has(gk)) groups.set(gk, { 类型: family, 对象键: key, 卡: [] })
     groups.get(gk).卡.push({
       卡名: card.basic.卡名 ?? '',
       采集日期: card.basic.采集日期 ?? '',
@@ -848,14 +852,14 @@ export function dupesReport(root) {
     // 同组内按采集日期排：先收的那张通常该留下，后来的内容并进去。
     g.卡.sort((a, b) => a.采集日期.localeCompare(b.采集日期) || a.相对路径.localeCompare(b.相对路径))
     rows.push({
-      类型族: g.类型族,
+      类型: g.类型,
       卡数: g.卡.length,
       卡: g.卡,
       建议留下: g.卡[0].相对路径,
       建议并入: g.卡.slice(1).map((c) => c.相对路径),
     })
   }
-  rows.sort((a, b) => b.卡数 - a.卡数 || a.类型族.localeCompare(b.类型族))
+  rows.sort((a, b) => b.卡数 - a.卡数 || a.类型.localeCompare(b.类型))
   return { ok: true, issues: [], rows, total: rows.reduce((n, r) => n + r.卡数, 0) }
 }
 // —— 相对路径的把关：卡管理全部动作都按「库内的相对路径」定位，越界一律拒绝。
@@ -871,7 +875,7 @@ function safeRelPath(rel) {
   if (isAbsolute(text) || /^[A-Za-z]:/.test(text)) return { ok: false, error: `路径只收库内相对路径，不收绝对路径：${text}` }
   const parts = text.split(/[/\\]+/).filter((p) => p && p !== '.')
   if (parts.includes('..')) return { ok: false, error: `路径不得含 ..（会写出库根之外）：${text}` }
-  if (parts.length < 2) return { ok: false, error: `路径须为 <桶>/<类型族>/<卡文件名>：${text}` }
+  if (parts.length < 2) return { ok: false, error: `路径须为 <大类>/<类型>/<卡文件名>：${text}` }
   return { ok: true, rel: parts.join('/') }
 }
 
@@ -888,7 +892,7 @@ function cardRel(rel) {
   return checked
 }
 
-// —— 接口六：改卡上的一行（F-14 的「改」）。桶与类型族不走这里，走 cardMove。
+// —— 接口六：改卡上的一行（F-14 的「改」）。大类与类型不走这里，走 cardMove。
 // 认三个节：基本信息（默认）、类型维度（--section 类型维度）、正文。
 // 字段不存在时不新建：拼错字段名若静默新增，卡上会多出一行谁也不知道的字段。
 const SECTION_BASIC = '基本信息'
@@ -896,7 +900,7 @@ const SECTION_DIMENSION = '类型维度'
 const SECTION_BODY = '正文'
 const CARD_SECTIONS = [SECTION_BASIC, SECTION_DIMENSION, SECTION_BODY]
 // 这两行决定文件放在哪个目录，改了而不挪文件，文件位置与字段就不符（F-14 把挪类型单列一条）。
-const LOCATION_FIELDS = ['桶', '类型族']
+const LOCATION_FIELDS = ['大类', '类型']
 
 export function cardEdit(root, { path: relPath, field, value, section = SECTION_BASIC } = {}) {
   const checked = cardRel(relPath)
@@ -909,7 +913,7 @@ export function cardEdit(root, { path: relPath, field, value, section = SECTION_
   const name = String(field ?? '').trim()
   if (!name) return { ok: false, issues: ['缺 --field：要改哪一行，如 要点'] }
   if (LOCATION_FIELDS.includes(name) && sectionName === SECTION_BASIC) {
-    return { ok: false, issues: [`「${name}」决定文件放在哪个目录，不走 card edit；改用 card move --bucket <桶> --family <类型族>`] }
+    return { ok: false, issues: [`「${name}」决定文件放在哪个目录，不走 card edit；改用 card move --bucket <大类> --family <类型>`] }
   }
   if (value === undefined) return { ok: false, issues: ['缺 --value：这一行改成什么'] }
 
@@ -1008,7 +1012,7 @@ export function cardMerge(root, { from, into } = {}) {
   return { ok: true, issues: [], relPath: intoRel, from: fromRel, mergedFields: Object.keys(merged) }
 }
 
-// —— 接口十：挪类型（F-14 的「挪」）。改「桶」「类型族」两行，文件移到新目录，文件名不变。
+// —— 接口十：挪类型（F-14 的「挪」）。改「大类」「类型」两行，文件移到新目录，文件名不变。
 // 新路径已存在时拒绝：挪过去盖掉另一张卡，等于一次删卡还没进回收站。
 export function cardMove(root, { path: relPath, bucket, family } = {}) {
   const checked = cardRel(relPath)
@@ -1016,45 +1020,45 @@ export function cardMove(root, { path: relPath, bucket, family } = {}) {
   const rel = checked.rel
   const nextBucket = String(bucket ?? '').trim()
   const nextFamily = String(family ?? '').trim()
-  if (!nextBucket) return { ok: false, issues: ['缺 --bucket：挪到哪个桶（故事零件、写作方法、作品案例、现实避坑）'] }
-  if (!nextFamily) return { ok: false, issues: ['缺 --family：挪到哪个类型族，如 S-03 剧情桥段'] }
-  // 注册表只固定编号前缀，族名可生长（子类开放）；但「编号 名字」的段式是注册表的一贯写法，缺名字会与注册表行对不上。
+  if (!nextBucket) return { ok: false, issues: ['缺 --bucket：挪到哪个大类（故事零件、写作方法、作品案例、现实避坑）'] }
+  if (!nextFamily) return { ok: false, issues: ['缺 --family：挪到哪个类型，如 S-03 剧情桥段'] }
+  // 注册表只固定编号前缀，类型名可生长（细分开放）；但「编号 名字」的段式是注册表的一贯写法，缺名字会与注册表行对不上。
   const familyMatch = /^(S-\d{2})\s+(\S.*)$/.exec(nextFamily)
   if (!familyMatch) {
-    return { ok: false, issues: [`--family 要写成注册表的段式「S-NN 族名」，如 S-03 剧情桥段：${nextFamily}`] }
+    return { ok: false, issues: [`--family 要写成注册表的段式「S-NN 类型名」，如 S-03 剧情桥段：${nextFamily}`] }
   }
-  // 目录名只取族名，不带编号：注册表的产卡路径是 素材库/<桶>/<族名>/，编号是卡上「类型族」那一行的前缀。
+  // 目录名只取类型名，不带编号：注册表的产卡路径是 素材库/<大类>/<类型名>/，编号是卡上「类型」那一行的前缀。
   const familyDir = familyMatch[2].trim()
-  if (/[/\\]|\.\./.test(familyDir)) return { ok: false, issues: [`类型族名不能含路径分隔符或 ..：${nextFamily}`] }
+  if (/[/\\]|\.\./.test(familyDir)) return { ok: false, issues: [`类型名不能含路径分隔符或 ..：${nextFamily}`] }
   if (isTrashed(rel)) return { ok: false, issues: [`${TRASH_DIR}/ 里的卡不参与挪类型：${rel}`] }
-  if (!BUCKETS.includes(nextBucket)) return { ok: false, issues: [`桶「${nextBucket}」不合法，只能是：${BUCKETS.join('、')}`] }
+  if (!BUCKETS.includes(nextBucket)) return { ok: false, issues: [`大类「${nextBucket}」不合法，只能是：${BUCKETS.join('、')}`] }
 
   const file = join(root, rel)
   if (!existsSync(file)) return { ok: false, issues: [`卡不存在：${rel}`] }
 
-  // 目录由「桶/族名」派生，与注册表「产卡入 素材库/<桶>/<类型族>/」同一口径。
+  // 目录由「大类/类型名」派生，与注册表「产卡入 素材库/<大类>/<类型>/」同一口径。
   const nextRel = `${nextBucket}/${familyDir}/${basename(rel)}`
   if (nextRel === rel) {
     // 同一个位置：只把两行对齐，不假装挪过；已经对得上就一个字节都不写。
     const current = readCard(file).basic
-    if (current.桶 === nextBucket && current.类型族 === nextFamily) {
+    if (current.大类 === nextBucket && current.类型 === nextFamily) {
       return { ok: true, issues: [], relPath: rel, unchanged: true }
     }
-    const aligned = writeCard(root, { basic: { 桶: nextBucket, 类型族: nextFamily } }, rel)
+    const aligned = writeCard(root, { basic: { 大类: nextBucket, 类型: nextFamily } }, rel)
     if (!aligned.ok) return { ok: false, issues: aligned.issues }
     return { ok: true, issues: [], relPath: rel, unchanged: true }
   }
   if (existsSync(join(root, nextRel))) return { ok: false, issues: [`新路径已存在，不覆盖：${nextRel}`] }
   // 搬之前先按新两行校验一遍：卡本身坏了就不该动它的位置，否则库校验会多出一条说不清的错。
   const before = readCard(file)
-  const nextBasic = { ...before.basic, 桶: nextBucket, 类型族: nextFamily }
+  const nextBasic = { ...before.basic, 大类: nextBucket, 类型: nextFamily }
   const issues = checkBasic(nextBasic)
   if (issues.length) return { ok: false, issues }
 
   // 先搬文件再写两行：写卡走 writeCard，它按盘上内容合并，落盘位置就是新路径。
-  // 反过来先写后搬，一旦搬失败，卡上写着新桶而文件还在旧目录，最容易被误当成已挪好。
+  // 反过来先写后搬，一旦搬失败，卡上写着新大类而文件还在旧目录，最容易被误当成已挪好。
   moveFile(file, join(root, nextRel))
-  const written = writeCard(root, { basic: { 桶: nextBucket, 类型族: nextFamily } }, nextRel)
+  const written = writeCard(root, { basic: { 大类: nextBucket, 类型: nextFamily } }, nextRel)
   if (!written.ok) return { ok: false, issues: written.issues, relPath: nextRel }
   // 新行由 writeCard 的 upsert 写进索引，旧路径那一行得单独删掉，否则索引里留着断链行。
   dropIndexRows(root, [rel])
@@ -1227,7 +1231,7 @@ function indexCard(root, rel) {
   return { ok: true, issues: [] }
 }
 
-// —— 查重（F-19）：先按桶、类型族、子类、关键词四级收窄索引，命中才打开卡比对要点。
+// —— 查重（F-19）：先按大类、类型、细分、关键词四级收窄索引，命中才打开卡比对要点。
 // 库上千张卡时整表翻一遍既慢又看不出「像不像」，收窄后再比对才有意义。
 // 一个筛选项都不给时直接拒绝：那等于整表翻，而整表翻正是 F-19 要消掉的做法。
 // 关键词比对索引里的「要点」与「卡名」两列，够用来判断「库里有没有这个对象」；
@@ -1238,8 +1242,8 @@ function matchesText(haystack, needle) {
   return String(haystack ?? '').toLowerCase().includes(String(needle).toLowerCase())
 }
 
-// 桶与类型族可以给多个值：「主角进诏狱」这类需求天然横跨历史细节、桥段、
-// 意象、避雷（F-25），逼用户一个一个族去查，等于把「一句话查多族」推回给他。
+// 大类与类型可以给多个值：「主角进诏狱」这类需求天然横跨历史细节、桥段、
+// 意象、避雷（F-25），逼用户一个一个类型去查，等于把「一句话查多类型」推回给他。
 // 把「甲,乙」拆成数组。全角逗号也认——中文输入法下很自然会打出「，」。
 function splitValues(value) {
   if (value === undefined || value === null) return []
@@ -1256,7 +1260,7 @@ export function findCards(root, { bucket, family, sub, keyword, object, fromWork
 
   // 判「给没给筛选项」要看拆分后的结果，不能只看原字符串非空：
   // `--bucket " , "` 的 trim 结果非空，但拆完一个值都没有，那样会当成
-  // 「给了桶筛」而实际上一个桶都没筛，结果就是整表翻——这正是要防的。
+  // 「给了大类筛」而实际上一个大类都没筛，结果就是整表翻——这正是要防的。
   const effective = FIND_FILTERS.filter((k) => {
     if (filters[k] === undefined) return false
     if (k === 'bucket') return buckets.length > 0
@@ -1273,10 +1277,10 @@ export function findCards(root, { bucket, family, sub, keyword, object, fromWork
   }
   const used = effective
 
-  // 桶名与类型族名先验：拼错时返回 0 行会被误读成「库里没有」，其实只是名字写错了。
+  // 大类名与类型名先验：拼错时返回 0 行会被误读成「库里没有」，其实只是名字写错了。
   // 多值时逐个验，错误信息要指出是哪一个写错了。
   for (const b of buckets) {
-    if (!BUCKETS.includes(b)) return { ok: false, issues: [`--bucket 只认四个桶：${BUCKETS.join('、')}；给的是「${b}」`], rows: [] }
+    if (!BUCKETS.includes(b)) return { ok: false, issues: [`--bucket 只认四个大类：${BUCKETS.join('、')}；给的是「${b}」`], rows: [] }
   }
 
   // --object 与 --from-work 都得读卡：索引里既没有「对象标识」也没有「出自作品」列
@@ -1293,15 +1297,15 @@ export function findCards(root, { bucket, family, sub, keyword, object, fromWork
       if (key && objectKeyOf(card.basic) !== key) continue
       if (work && objectKey(card.basic.出自作品) !== work) continue
       // 其余筛选项也要满足：--bucket 故事零件 --object 五条悟 是两个条件的「与」。
-      if (buckets.length && !buckets.includes(card.basic.桶)) continue
-      if (families.length && !families.some((f) => matchesText(card.basic.类型族, f))) continue
-      if (sub && !matchesText(card.basic.子类, sub)) continue
+      if (buckets.length && !buckets.includes(card.basic.大类)) continue
+      if (families.length && !families.some((f) => matchesText(card.basic.类型, f))) continue
+      if (sub && !matchesText(card.basic.细分, sub)) continue
       if (keyword && !(matchesText(card.basic.要点, keyword) || matchesText(card.basic.卡名, keyword))) continue
       rows.push({
         卡名: card.basic.卡名 ?? '',
-        桶: card.basic.桶 ?? '',
-        类型族: card.basic.类型族 ?? '',
-        子类: card.basic.子类 ?? '',
+        大类: card.basic.大类 ?? '',
+        类型: card.basic.类型 ?? '',
+        细分: card.basic.细分 ?? '',
         要点: card.basic.要点 ?? '',
         时效: card.basic.时效状态 ?? '',
         相对路径: rel,
@@ -1313,11 +1317,11 @@ export function findCards(root, { bucket, family, sub, keyword, object, fromWork
   }
 
   let rows = readIndex(root)
-  // 逐级收窄：桶 → 类型族 → 子类 → 关键词。每级都在上一级的结果里筛，不重读索引。
-  // 桶与类型族的多值是「或」的关系（命中任一个就算），同级内不叠加。
-  if (buckets.length) rows = rows.filter((r) => buckets.includes(r.桶))
-  if (families.length) rows = rows.filter((r) => families.some((f) => matchesText(r.类型族, f)))
-  if (sub) rows = rows.filter((r) => matchesText(r.子类, sub))
+  // 逐级收窄：大类 → 类型 → 细分 → 关键词。每级都在上一级的结果里筛，不重读索引。
+  // 大类与类型的多值是「或」的关系（命中任一个就算），同级内不叠加。
+  if (buckets.length) rows = rows.filter((r) => buckets.includes(r.大类))
+  if (families.length) rows = rows.filter((r) => families.some((f) => matchesText(r.类型, f)))
+  if (sub) rows = rows.filter((r) => matchesText(r.细分, sub))
   if (keyword) rows = rows.filter((r) => matchesText(r.要点, keyword) || matchesText(r.卡名, keyword))
 
   return { ok: true, issues: [], rows, narrowed: used, buckets, families }
@@ -1342,11 +1346,21 @@ export function upgradeVault(root, { dryRun = false } = {}) {
 
     const basic = { ...card.basic }
     const filled = []
+
+    // 0.11.0 给三个字段改了名。这一步必须在「补必填」与「退役字段」之前：
+    // 否则旧名会被当成「契约里已没有的字段」挪进「历史字段」——值还在，
+    // 但它不再是真字段，卡上所有必填校验都会说缺。
+    for (const [旧名, 新名] of Object.entries(RENAMED_FIELDS)) {
+      if (basic[旧名] === undefined) continue
+      if (basic[新名] === undefined) basic[新名] = basic[旧名]
+      delete basic[旧名]
+      filled.push(`${旧名}→${新名}`)
+    }
     for (const f of FIELDS) {
       if (basic[f.名] !== undefined && basic[f.名] !== '') continue
       if (f.名 === '私有') {
         // 私有有默认值可算，不必记「待补」。
-        basic.私有 = defaultPrivate(basic.类型族)
+        basic.私有 = defaultPrivate(basic.类型)
         filled.push(`私有=${basic.私有}`)
       } else if (f.必填) {
         // 必填但机器猜不出来的，填「待补」并让用户知道要回来补什么。
@@ -1407,7 +1421,7 @@ export function detectVault({ vault, cwd = process.cwd() } = {}) {
   return { kind: '未找到', root: null }
 }
 
-// —— 建库（F-09）：一次写齐身份证、索引表头与四个桶目录。
+// —— 建库（F-09）：一次写齐身份证、索引表头与四个大类目录。
 export function initVault(root, { intro = '灵感素材库' } = {}) {
   if (existsSync(join(root, 'VAULT.md'))) {
     return { ok: false, issues: [`该目录已是素材库（已有 VAULT.md）：${root}`] }
@@ -1424,25 +1438,25 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
 
 子命令
   detect            找当前该用哪个库（F-06）
-  init              建库：写身份证、索引表头与四个桶目录（F-09）
+  init              建库：写身份证、索引表头与四个大类目录（F-09）
   check             校验库：身份证、索引、卡三方对账（逐列比）
   index rebuild     从卡重算整个索引；坏卡跳过并单独报
   upgrade           把老库升到当前格式：补缺失字段，已删字段挪进「历史字段」
   index add         只把一张卡补进索引，不重扫全库
   write             按 JSON 写一张卡，顺带修好索引
-  card edit         改卡上的一行，索引同步（桶与类型族改用 card move）
+  card edit         改卡上的一行，索引同步（大类与类型改用 card move）
   card delete       把卡移进 已删卡片/，并存原相对路径，可从那里找回
   card restore      把 已删卡片/ 里的卡移回原路径并补回索引；原位置被占则拒绝
   card merge        把 --from 的补充记录与关联卡并进 --into，原卡进 已删卡片/
-  card move         改桶与类型族两行并移到新目录；新路径已存在则拒绝
-  find              查重：按桶、类型族、子类、关键词收窄索引，命中才比对（F-19）
+  card move         改大类与类型两行并移到新目录；新路径已存在则拒绝
+  find              查重：按大类、类型、细分、关键词收窄索引，命中才比对（F-19）
   collect plan      清点来源目录：列出可采的文本文件与不采的其他文件，给源指纹（F-22）
   collect mark      把本批采完的文件记进进度，并报还剩多少（F-22）
   collect status    查这份素材采到哪了、还剩哪些（F-22）
   retire            列出建议退休的卡：超期未用、未补过料（F-20）；只列不删
   used              给卡记一笔用在哪个作品第几章（F-21）
   review            列出该复审的卡：热梗 3 个月、时事 6 个月、其余时效敏感 12 个月（F-23）
-  overview          库况：各族卡数、最近收卡、待补与待复审数量（F-28）
+  overview          库况：各类型卡数、最近收卡、待补与待复审数量（F-28）
   project           项目视图：列出某本书用过的卡（F-26）
   pack              把选中的卡打包成一份引用文件，私有卡一律不进（F-27）
   add               补卡不建新卡：已有就跳过或补进旧卡，没有才建（F-30）
@@ -1458,12 +1472,12 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   --section <节名>  card edit 改哪一节：基本信息（默认）、类型维度、正文
   --from <相对路径> card merge 被并入的卡
   --into <相对路径> card merge 的目标卡
-  --bucket <桶>     card move 挪到哪个桶；find 按桶收窄（可逗号分隔多个，如 故事零件,写作方法）
-  --family <类型族> card move 挪到哪个类型族；find 按类型族收窄（可逗号分隔多个，如 S-02,S-03）
-  --sub <子类>      find 按子类收窄（含即命中）
+  --bucket <大类>     card move 挪到哪个大类；find 按大类收窄（可逗号分隔多个，如 故事零件,写作方法）
+  --family <类型> card move 挪到哪个类型；find 按类型收窄（可逗号分隔多个，如 S-02,S-03）
+  --sub <细分>      find 按细分收窄（含即命中）
   --keyword <文本>  find 按关键词收窄，比对卡名与要点（含即命中）
   --object <对象名> find 按对象标识收窄：认得出「同一对象」的卡（F-30），如 --object 五条悟
-  --from-work <作品名> find 按「出自作品」收窄：一部作品的卡分散在多个族，用这条一次全取（F-32），如 --from-work 幻界战线
+  --from-work <作品名> find 按「出自作品」收窄：一部作品的卡分散在多个类型，用这条一次全取（F-32），如 --from-work 幻界战线
   --source <目录>   collect 的素材来源目录
   --fingerprint <值> collect mark 的源指纹，由 collect plan 给出
   --done <路径列表> collect mark 本批采完了哪些（相对源目录，逗号分隔）
@@ -1487,7 +1501,7 @@ export const CARD_ACTION_FLAGS = {
   delete: [['path', '--path <卡的相对路径>']],
   restore: [['path', '--path <卡的相对路径>']],
   merge: [['from', '--from <被并入的卡>'], ['into', '--into <目标卡>']],
-  move: [['path', '--path <卡的相对路径>'], ['bucket', '--bucket <桶>'], ['family', '--family <类型族>']],
+  move: [['path', '--path <卡的相对路径>'], ['bucket', '--bucket <大类>'], ['family', '--family <类型>']],
 }
 
 export function parseCliArgs(argv) {
@@ -1735,14 +1749,14 @@ export function runCli(argv, io = {}) {
     const dp = dupesReport(root)
     if (dp.rows.length === 0) {
       // 没有双卡是正常结论，退 0。
-      emit({ ok: true, errors: [], data: { groups: 0, total: 0, rows: [] } }, '没有同对象双卡：每个类型族里同一个对象都只有一张卡。')
+      emit({ ok: true, errors: [], data: { groups: 0, total: 0, rows: [] } }, '没有同对象双卡：每个类型里同一个对象都只有一张卡。')
       return 0
     }
     const out = []
     out.push('发现 ' + dp.rows.length + ' 组同对象双卡，共 ' + dp.total + ' 张（只列不改，删不删由你逐步确认）')
     out.push('')
     for (const g of dp.rows) {
-      out.push('【' + g.类型族 + '】' + g.卡数 + ' 张')
+      out.push('【' + g.类型 + '】' + g.卡数 + ' 张')
       for (const c of g.卡) out.push('- ' + c.卡名 + '（收于 ' + c.采集日期 + '）' + c.相对路径)
       out.push('  建议留下：' + g.建议留下)
       out.push('  合并命令：card merge --from <多余的> --into ' + g.建议留下)
@@ -1781,15 +1795,15 @@ export function runCli(argv, io = {}) {
     }
     if (ad.duplicates && ad.duplicates.length > 1) {
       out.push('')
-      out.push('注意：这个类型族里已经有 ' + ad.duplicates.length + ' 张同对象的卡，本次只动第一张：')
+      out.push('注意：这个类型里已经有 ' + ad.duplicates.length + ' 张同对象的卡，本次只动第一张：')
       for (const d of ad.duplicates) out.push('- ' + d)
       out.push('合并它们：card merge --from <多余的那张> --into <要留下的那张>')
     }
     if (ad.relatedElsewhere && ad.relatedElsewhere.length) {
       // 跨类型各自成卡（F-30），但两张卡得互指，否则同一个对象在库里散成互不相识的几张。
       out.push('')
-      out.push('这个对象在别的类型族里已有卡（跨类型不算重复）：')
-      for (const e of ad.relatedElsewhere) out.push('- ' + e.类型族 + '：' + e.rel)
+      out.push('这个对象在别的类型里已有卡（跨类型不算重复）：')
+      for (const e of ad.relatedElsewhere) out.push('- ' + e.类型 + '：' + e.rel)
       if (ad.linked && ad.linked.length) {
         out.push('已把两边的路径写进各自的「关联卡」行，写书时问这个对象能一次拿全。')
       } else {
@@ -1844,11 +1858,11 @@ export function runCli(argv, io = {}) {
       return 0
     }
     const out = []
-    out.push('《' + pv.work + '》用过 ' + pv.rows.length + ' 张卡（按桶：' + pv.byBucket.map((b) => b.桶 + ' ' + b.卡数).join('，') + '）')
+    out.push('《' + pv.work + '》用过 ' + pv.rows.length + ' 张卡（按大类：' + pv.byBucket.map((b) => b.大类 + ' ' + b.卡数).join('，') + '）')
     out.push('')
     for (const r of pv.rows) {
       out.push('- ' + r.卡名)
-      out.push('  ' + r.类型族 + ' / ' + r.子类 + '；' + r.用在哪)
+      out.push('  ' + r.类型 + ' / ' + r.细分 + '；' + r.用在哪)
       out.push('  要点：' + r.要点)
       out.push('  ' + r.相对路径)
     }
@@ -1865,10 +1879,10 @@ export function runCli(argv, io = {}) {
     const out = []
     out.push('共 ' + o.total + ' 张卡' + (o.latest ? '，最近收卡 ' + o.latest : ''))
     out.push('')
-    out.push('按桶：' + o.byBucket.map((b) => b.桶 + ' ' + b.卡数).join('，'))
+    out.push('按大类：' + o.byBucket.map((b) => b.大类 + ' ' + b.卡数).join('，'))
     out.push('')
-    out.push('按类型族：')
-    for (const f of o.byFamily) out.push('- ' + f.类型族 + '：' + f.卡数 + ' 张')
+    out.push('按类型：')
+    for (const f of o.byFamily) out.push('- ' + f.类型 + '：' + f.卡数 + ' 张')
     out.push('')
     // 待补与待复审分开报：前者要回来补字段，后者要回去核内容，两件事。
     out.push('待补 ' + o.pending.length + ' 处（升级时机器补不出、填了「待补」的字段）')
@@ -1880,8 +1894,8 @@ export function runCli(argv, io = {}) {
     out.push('待复审 ' + o.review + ' 张（跑 review 看清单）')
     if (o.thinFamilies.length) {
       out.push('')
-      out.push('偏薄的族（少于 ' + o.thin + ' 张，可以的话收一点）：')
-      for (const f of o.thinFamilies) out.push('- ' + f.类型族 + '：' + f.卡数 + ' 张')
+      out.push('偏薄的类型（少于 ' + o.thin + ' 张，可以的话收一点）：')
+      for (const f of o.thinFamilies) out.push('- ' + f.类型 + '：' + f.卡数 + ' 张')
     }
     emit({ ok: true, errors: [], data: o }, out.join('\n'))
     return 0
@@ -1927,7 +1941,7 @@ export function runCli(argv, io = {}) {
     }
     const head = '建议退休 ' + result.rows.length + ' 张（判据：采集超过 ' + result.limit + ' 个月，且「已用在」与「补充记录」都为空）'
     const list = result.rows
-      .map((r) => '- ' + r.卡名 + '\n  ' + r.类型族 + '；采集于 ' + r.采集日期 + '，闲置 ' + r.闲置月数 + ' 个月\n  ' + r.相对路径)
+      .map((r) => '- ' + r.卡名 + '\n  ' + r.类型 + '；采集于 ' + r.采集日期 + '，闲置 ' + r.闲置月数 + ' 个月\n  ' + r.相对路径)
       .join('\n')
     const tail = '\n\n这只是建议，删不删你定：要删用 card delete --path <相对路径>，要留就不必动它。'
     emit(
@@ -1959,35 +1973,35 @@ export function runCli(argv, io = {}) {
       emit({ ok: false, error: result.issues.join('；'), data: {} }, result.issues.join('\n'))
       return 2
     }
-    // 多族命中时按族分组：平铺成一长串看不出「哪一族有料、哪一族空着」，
-    // 而后者正是「一句话查多族」要回答的东西。只查一族时分组表头是噪音，退回归。
-    // 判据用「给了多个类型族」而不是「结果里有多个族」：只给一个桶时结果里本来就
-    // 会有好几个族，那时分组只是把本来清楚的东西再切碎一遍。
+    // 多类型命中时按类型分组：平铺成一长串看不出「哪一个类型有料、哪一个类型空着」，
+    // 而后者正是「一句话查多类型」要回答的东西。只查一类型时分组表头是噪音，退回归。
+    // 判据用「给了多个类型」而不是「结果里有多个类型」：只给一个大类时结果里本来就
+    // 会有好几个类型，那时分组只是把本来清楚的东西再切碎一遍。
     const multiFamily = (result.families ?? []).length > 1
     const byFamily = new Map()
     for (const r of result.rows) {
-      const key = `${r.桶} / ${r.类型族}`
+      const key = `${r.大类} / ${r.类型}`
       if (!byFamily.has(key)) byFamily.set(key, [])
       byFamily.get(key).push(r)
     }
     const head = result.rows.length
       ? `命中 ${result.rows.length} 张（收窄条件：${result.narrowed.join('、')}）`
       : `没有命中（收窄条件：${result.narrowed.join('、')}）——库里可能确实没有，也可能筛得太窄，可放宽再试`
-    // 请求了但没有卡的族，也要报出来。
+    // 请求了但没有卡的类型，也要报出来。
     //
-    // find 收到了族名，所以它知道哪个族问过、哪个是空的；而「空着的那族要如实
-    // 说没查到」原先只能靠调用方自己记住问过哪些族。记账责任放在这边更稳——
-    // 调用方漏记一次，读的人就会以为「压根没查这个族」，而且没有任何提示。
+    // find 收到了类型名，所以它知道哪个类型问过、哪个是空的；而「空着的那类型要如实
+    // 说没查到」原先只能靠调用方自己记住问过哪些类型。记账责任放在这边更稳——
+    // 调用方漏记一次，读的人就会以为「压根没查这个类型」，而且没有任何提示。
     const emptyFamilies = multiFamily
-      ? (result.families ?? []).filter((f) => !result.rows.some((r) => matchesText(r.类型族, f)))
+      ? (result.families ?? []).filter((f) => !result.rows.some((r) => matchesText(r.类型, f)))
       : []
     const list = [...byFamily.entries()]
       .map(([group, items]) => {
-        const lines = items.map((r) => `- ${r.卡名}\n  子类：${r.子类}；要点：${r.要点}\n  ${r.相对路径}`)
+        const lines = items.map((r) => `- ${r.卡名}\n  细分：${r.细分}；要点：${r.要点}\n  ${r.相对路径}`)
         return multiFamily ? `【${group}】${items.length} 张\n${lines.join('\n')}` : lines.join('\n')
       })
       .join('\n\n')
-    const emptyList = emptyFamilies.map((f) => `【${f}】0 张\n库里没有这一族的卡`).join('\n\n')
+    const emptyList = emptyFamilies.map((f) => `【${f}】0 张\n库里没有这一类型的卡`).join('\n\n')
     // 查重结果为空不是失败：库里没有这张卡是正常结论，退出码仍是 0。
     emit(
       { ok: true, errors: [], data: { count: result.rows.length, narrowed: result.narrowed, rows: result.rows, buckets: result.buckets, families: result.families, emptyFamilies, object: result.object, groups: [...byFamily.keys()] } },
@@ -2055,7 +2069,7 @@ export function runCli(argv, io = {}) {
       delete: `已删 ${result.relPath}，移进 ${result.trashPath}（可用 card restore 找回）`,
       restore: `已找回 ${result.relPath}`,
       merge: `已把 ${result.from} 并进 ${result.relPath}${result.mergedFields?.length ? `（并入 ${result.mergedFields.join('、')}）` : '（被并入卡没有补充记录与关联卡，只收原卡）'}`,
-      move: result.unchanged ? `桶与类型族已是目标值，文件未移动：${result.relPath}` : `已挪到 ${result.relPath}（原 ${result.from}）`,
+      move: result.unchanged ? `大类与类型已是目标值，文件未移动：${result.relPath}` : `已挪到 ${result.relPath}（原 ${result.from}）`,
     }[action]
     emit({ ok: true, errors: [], data }, text)
     return 0

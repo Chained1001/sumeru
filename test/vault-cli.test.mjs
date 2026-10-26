@@ -36,7 +36,7 @@ function writeCardViaCli(root, card) {
 
 const CARD = {
   relPath: '故事零件/人物设定/卡-20261023-甲.md',
-  basic: { 卡名: '甲', 桶: '故事零件', 类型族: 'S-02 人物设定', 子类: '原型基底', 来源: '口述', 来源等级: '单源', 采集日期: '2026-10-23', 时效状态: '长期', 要点: '表层傻乐里层认死理' },
+  basic: { 卡名: '甲', 大类: '故事零件', 类型: 'S-02 人物设定', 细分: '原型基底', 来源: '口述', 来源等级: '单源', 采集日期: '2026-10-23', 时效状态: '长期', 要点: '表层傻乐里层认死理' },
   dimension: { 性格核: '反差' },
   body: { 内容: '底盘' },
 }
@@ -74,7 +74,7 @@ test('detect：指定、就近、未找到三种回报', () => {
   assert.equal(given.code, 0)
   assert.match(given.stdout, /指定/)
 
-  // 从桶目录里往上看，应命中库根：这是「就近」的真实用法。
+  // 从大类目录里往上看，应命中库根：这是「就近」的真实用法。
   const near = run(['detect'], join(lib, '故事零件'))
   assert.equal(near.code, 0)
   assert.match(near.stdout, /就近/)
@@ -84,7 +84,7 @@ test('detect：指定、就近、未找到三种回报', () => {
   assert.match(none.stdout, /未找到库/)
 })
 
-test('init 一次写齐身份证、索引表头与四个桶目录', () => {
+test('init 一次写齐身份证、索引表头与四个大类目录', () => {
   const lib = join(tmp(), '素材库')
   const r = run(['init', '--vault', lib, '--intro', '我的库'])
   assert.equal(r.code, 0, r.stdout)
@@ -92,7 +92,7 @@ test('init 一次写齐身份证、索引表头与四个桶目录', () => {
     assert.ok(existsSync(join(lib, name)), `init 未建出 ${name}`)
   }
   const meta = readFileSync(join(lib, 'VAULT.md'), 'utf8')
-  assert.match(meta, /版本：2/)
+  assert.match(meta, /版本：3/)
   assert.match(meta, /简介：我的库/)
 })
 
@@ -213,7 +213,7 @@ test('index add 只补一张卡，不重扫全库', () => {
   run(['init', '--vault', lib])
   mkdirSync(join(lib, '故事零件', '人物设定'), { recursive: true })
   // 绕过 write 直接放卡，模拟索引里缺一行。
-  writeFileSync(join(lib, CARD.relPath), '# 甲\n\n## 基本信息\n\n- 卡名：甲\n- 桶：故事零件\n- 类型族：S-02 人物设定\n- 子类：原型基底\n- 来源：口述\n- 来源等级：单源\n- 采集日期：2026-10-23\n- 时效状态：长期\n- 私有：否\n- 要点：表层傻乐里层认死理\n', 'utf8')
+  writeFileSync(join(lib, CARD.relPath), '# 甲\n\n## 基本信息\n\n- 卡名：甲\n- 大类：故事零件\n- 类型：S-02 人物设定\n- 细分：原型基底\n- 来源：口述\n- 来源等级：单源\n- 采集日期：2026-10-23\n- 时效状态：长期\n- 私有：否\n- 要点：表层傻乐里层认死理\n', 'utf8')
   assert.equal(run(['check', '--vault', lib]).code, 1, '未进索引时 check 应报错')
 
   const r = run(['index', 'add', '--vault', lib, '--path', CARD.relPath])
@@ -241,7 +241,7 @@ test('write 与 rebuild 产出的索引逐字相同，行序不取决于写入�
   const libA = tmp()
   const libB = tmp()
   for (const lib of [libA, libB]) run(['init', '--vault', lib])
-  const second = { ...CARD, relPath: '故事零件/剧情桥段/卡-20261023-乙.md', basic: { ...CARD.basic, 卡名: '乙', 类型族: 'S-03 剧情桥段', 要点: '开局先给一个反常动作' } }
+  const second = { ...CARD, relPath: '故事零件/剧情桥段/卡-20261023-乙.md', basic: { ...CARD.basic, 卡名: '乙', 类型: 'S-03 剧情桥段', 要点: '开局先给一个反常动作' } }
 
   writeCardViaCli(libA, CARD)
   writeCardViaCli(libA, second)
@@ -260,7 +260,7 @@ function makeV1Lib() {
   mkdirSync(join(lib, '故事零件', '人物设定'), { recursive: true })
   mkdirSync(join(lib, '故事零件', '开书点子'), { recursive: true })
   writeFileSync(join(lib, 'VAULT.md'), '# 素材库身份证\n\n版本：1\n简介：老库\n', 'utf8')
-  const v1Card = (name, family, sub) => `# ${name}\n\n## 基本信息\n\n- 卡名：${name}\n- 桶：故事零件\n- 类型族：${family}\n- 子类：${sub}\n- 来源：口述\n- 出处链接：\n- 来源等级：单源\n- 采集日期：2026-10-01\n- 时效状态：长期\n- 要点：${name}的要点\n\n## 类型维度\n\n- 性格核：反差\n\n## 正文\n\n- 内容：底盘\n`
+  const v1Card = (name, family, sub) => `# ${name}\n\n## 基本信息\n\n- 卡名：${name}\n- 大类：故事零件\n- 类型：${family}\n- 细分：${sub}\n- 来源：口述\n- 出处链接：\n- 来源等级：单源\n- 采集日期：2026-10-01\n- 时效状态：长期\n- 要点：${name}的要点\n\n## 类型维度\n\n- 性格核：反差\n\n## 正文\n\n- 内容：底盘\n`
   const a = join(lib, '故事零件', '人物设定', '卡-20261001-老卡甲.md')
   const b = join(lib, '故事零件', '开书点子', '卡-20261001-老点子.md')
   writeFileSync(a, v1Card('老卡甲', 'S-02 人物设定', '原型基底'), 'utf8')
@@ -289,7 +289,7 @@ test('upgrade 实跑：补私有、版本升 2、check 通过', () => {
   assert.equal(r.code, 0, r.stdout + r.stderr)
   assert.match(readFileSync(cards[0], 'utf8'), /^- 私有：否$/m)
   assert.match(readFileSync(cards[1], 'utf8'), /^- 私有：是$/m)
-  assert.match(readFileSync(join(lib, 'VAULT.md'), 'utf8'), /版本：2/)
+  assert.match(readFileSync(join(lib, 'VAULT.md'), 'utf8'), /版本：3/)
   assert.equal(run(['check', '--vault', lib]).code, 0, '升级后 check 应通过')
 })
 
@@ -356,7 +356,7 @@ function makeCardLib() {
   const a = { ...CARD, body: { ...CARD.body, 补充记录: '2026-10-20 补了原型', 关联卡: '卡-丙' } }
   const b = {
     relPath: '故事零件/剧情桥段/卡-20261023-乙.md',
-    basic: { ...CARD.basic, 卡名: '乙', 类型族: 'S-03 剧情桥段', 要点: '开局先给一个反常动作' },
+    basic: { ...CARD.basic, 卡名: '乙', 类型: 'S-03 剧情桥段', 要点: '开局先给一个反常动作' },
     dimension: { 冲突结构: '反常动作钩子' },
     body: { 内容: '乙的底盘', 补充记录: '2026-10-21 补了变体', 关联卡: '卡-丁' },
   }
@@ -390,12 +390,12 @@ test('card edit 可改类型维度节的字段，也可清空可选字段', () =
   assert.equal(run(['check', '--vault', lib]).code, 0)
 })
 
-test('card edit 拒绝改桶与类型族：那两行决定了文件位置，须走 card move', () => {
+test('card edit 拒绝改大类与类型：那两行决定了文件位置，须走 card move', () => {
   const { lib } = makeCardLib()
-  const r = run(['card', 'edit', '--vault', lib, '--path', CARD.relPath, '--field', '桶', '--value', '写作方法'])
+  const r = run(['card', 'edit', '--vault', lib, '--path', CARD.relPath, '--field', '大类', '--value', '写作方法'])
   assert.equal(r.code, 1)
   assert.match(r.stdout, /card move/)
-  assert.match(cardText(lib, CARD.relPath), /^- 桶：故事零件$/m, '被拒绝时不得改动卡')
+  assert.match(cardText(lib, CARD.relPath), /^- 大类：故事零件$/m, '被拒绝时不得改动卡')
 })
 
 test('card edit 不新建卡上没有的字段，check 仍为 0', () => {
@@ -490,7 +490,7 @@ test('card merge 指向同一张卡或指向回收站里的卡时退出码 1', (
   assert.equal(run(['check', '--vault', lib]).code, 0)
 })
 
-test('card move：桶与类型族两行与目录一起改，文件名不变', () => {
+test('card move：大类与类型两行与目录一起改，文件名不变', () => {
   const { lib } = makeCardLib()
   const next = '故事零件/剧情桥段/卡-20261023-甲.md'
   const r = run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '故事零件', '--family', 'S-03 剧情桥段'])
@@ -499,13 +499,13 @@ test('card move：桶与类型族两行与目录一起改，文件名不变', ()
   assert.ok(existsSync(join(lib, next)), '文件应在新目录')
   assert.equal(existsSync(join(lib, CARD.relPath)), false, '旧位置应空出')
   const text = cardText(lib, next)
-  assert.match(text, /^- 桶：故事零件$/m)
-  assert.match(text, /^- 类型族：S-03 剧情桥段$/m)
-  // 目录取族名不带编号：注册表的产卡路径是 素材库/<桶>/<族名>/。
+  assert.match(text, /^- 大类：故事零件$/m)
+  assert.match(text, /^- 类型：S-03 剧情桥段$/m)
+  // 目录取类型名不带编号：注册表的产卡路径是 素材库/<大类>/<类型名>/。
   assert.equal(dirname(next).split('/')[1], '剧情桥段')
   const index = readFileSync(join(lib, 'INDEX.md'), 'utf8')
   assert.ok(!index.includes(CARD.relPath), '索引里不该留旧路径的行')
-  assert.match(index, /S-03 剧情桥段/, '索引行应跟上新的类型族')
+  assert.match(index, /S-03 剧情桥段/, '索引行应跟上新的类型')
   assert.equal(run(['check', '--vault', lib]).code, 0)
 })
 
@@ -524,18 +524,18 @@ test('card move 新路径已存在时退出码 1，不覆盖也不动卡', () =>
   assert.equal(run(['check', '--vault', lib]).code, 0)
 })
 
-test('card move 换桶：跨桶时目录与「桶」行一起改', () => {
+test('card move 换大类：跨大类时目录与「大类」行一起改', () => {
   const { lib } = makeCardLib()
   const next = '写作方法/写作技巧/卡-20261023-甲.md'
   const r = run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '写作方法', '--family', 'S-07 写作技巧'])
   assert.equal(r.code, 0, r.stdout + r.stderr)
   assert.ok(existsSync(join(lib, next)))
-  assert.match(cardText(lib, next), /^- 桶：写作方法$/m)
-  assert.match(cardText(lib, next), /^- 类型族：S-07 写作技巧$/m)
+  assert.match(cardText(lib, next), /^- 大类：写作方法$/m)
+  assert.match(cardText(lib, next), /^- 类型：S-07 写作技巧$/m)
   assert.equal(run(['check', '--vault', lib]).code, 0)
 })
 
-test('card move 拒绝不合法的桶与非注册表段式的类型族', () => {
+test('card move 拒绝不合法的大类与非注册表段式的类型', () => {
   const { lib } = makeCardLib()
   assert.equal(run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '杂项', '--family', 'S-03 剧情桥段']).code, 1)
   assert.equal(run(['card', 'move', '--vault', lib, '--path', CARD.relPath, '--bucket', '故事零件', '--family', '剧情桥段']).code, 1)
@@ -560,12 +560,12 @@ test('A-12：连续做「挪类型 → 改要点 → 删卡」，每步后 check
     assert.equal(indexRows(lib).length, listCardCount(lib), `${argv.slice(0, 2).join(' ')} 之后索引行数与卡数不等`)
     indexSnapshots.push(readFileSync(join(lib, 'INDEX.md'), 'utf8'))
   }
-  assert.match(indexSnapshots[1], /剧情桥段/, '挪类型后索引应指向新类型族')
+  assert.match(indexSnapshots[1], /剧情桥段/, '挪类型后索引应指向新类型')
   assert.match(indexSnapshots[2], /挪过之后再改的要点/, '改要点后索引应跟着改')
   assert.ok(!indexSnapshots[3].includes('卡-20261023-甲'), '删卡后索引不该再有这一行')
 })
 
-// 活卡数：桶目录下以「卡-」开头的 .md，不含 已删卡片/。与 vault.mjs 的 listCards 同一口径。
+// 活卡数：大类目录下以「卡-」开头的 .md，不含 已删卡片/。与 vault.mjs 的 listCards 同一口径。
 function listCardCount(lib) {
   let n = 0
   const walk = (dir, depth) => {
@@ -724,9 +724,9 @@ test('没有一个子命令会调 process.exit：脚本作为模块被 import �
 
 // —— 查重（F-19）：先收窄再比对。这组钉的是「不收窄就拒绝」与四级收窄的行为边界。
 const FIND_CARDS = [
-  { rel: '写作方法/技巧/卡-20261024-关系造梗.md', 卡名: '关系造梗', 桶: '写作方法', 类型族: 'S-06 技巧', 子类: '人物塑造', 要点: '梗依托人际关系生成，笑点交互繁殖' },
-  { rel: '写作方法/技巧/卡-20261024-三章钩子.md', 卡名: '三章一个钩子', 桶: '写作方法', 类型族: 'S-06 技巧', 子类: '节奏控制', 要点: '每三章必留一个未解之谜' },
-  { rel: '现实避坑/现实/卡-20261024-尸表检验.md', 卡名: '尸表检验', 桶: '现实避坑', 类型族: 'S-09 现实', 子类: '职业细节', 要点: '明清验尸停留在尸表检验层面' },
+  { rel: '写作方法/技巧/卡-20261024-关系造梗.md', 卡名: '关系造梗', 大类: '写作方法', 类型: 'S-06 技巧', 细分: '人物塑造', 要点: '梗依托人际关系生成，笑点交互繁殖' },
+  { rel: '写作方法/技巧/卡-20261024-三章钩子.md', 卡名: '三章一个钩子', 大类: '写作方法', 类型: 'S-06 技巧', 细分: '节奏控制', 要点: '每三章必留一个未解之谜' },
+  { rel: '现实避坑/现实/卡-20261024-尸表检验.md', 卡名: '尸表检验', 大类: '现实避坑', 类型: 'S-09 现实', 细分: '职业细节', 要点: '明清验尸停留在尸表检验层面' },
 ]
 
 function vaultWithCards() {
@@ -735,7 +735,7 @@ function vaultWithCards() {
   for (const c of FIND_CARDS) {
     const r = writeCardViaCli(root, {
       relPath: c.rel,
-      basic: { 卡名: c.卡名, 桶: c.桶, 类型族: c.类型族, 子类: c.子类, 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-24', 时效状态: '长期', 要点: c.要点 },
+      basic: { 卡名: c.卡名, 大类: c.大类, 类型: c.类型, 细分: c.细分, 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-24', 时效状态: '长期', 要点: c.要点 },
       dimension: {},
       body: { 内容: '测试' },
     })
@@ -751,7 +751,7 @@ test('find 不给任何筛选项时拒绝并退出 2：不许整表翻', () => {
   assert.match(r.stdout + r.stderr, /查重至少要给一个筛选项/)
 })
 
-test('find 按桶收窄只返回该桶的卡', () => {
+test('find 按大类收窄只返回该大类的卡', () => {
   const root = vaultWithCards()
   const r = run(['find', '--vault', root, '--bucket', '写作方法'])
   assert.equal(r.code, 0)
@@ -759,7 +759,7 @@ test('find 按桶收窄只返回该桶的卡', () => {
   assert.ok(!r.stdout.includes('尸表检验'), '现实避坑的卡不该出现在写作方法的结果里')
 })
 
-test('find 逐级收窄：桶加子类只剩一张', () => {
+test('find 逐级收窄：大类加细分只剩一张', () => {
   const root = vaultWithCards()
   const r = run(['find', '--vault', root, '--bucket', '写作方法', '--sub', '人物塑造'])
   assert.equal(r.code, 0)
@@ -784,11 +784,11 @@ test('find 查无结果不是错误：退出 0 并说明可能筛太窄', () => 
   assert.match(r.stdout, /放宽/, '应提示可能筛得太窄，否则用户会以为库里真的没有')
 })
 
-test('find 桶名拼错时退出 2，不静默返回 0 结果', () => {
+test('find 大类名拼错时退出 2，不静默返回 0 结果', () => {
   const root = vaultWithCards()
   const r = run(['find', '--vault', root, '--bucket', '积木'])
-  assert.equal(r.code, 2, '拼错桶名若返回 0 行，会被误读成库里没有')
-  assert.match(r.stdout + r.stderr, /只认四个桶/)
+  assert.equal(r.code, 2, '拼错大类名若返回 0 行，会被误读成库里没有')
+  assert.match(r.stdout + r.stderr, /只认四个大类/)
 })
 
 test('find 的 --json 给出 count 与 rows', () => {
@@ -999,7 +999,7 @@ test('SKILL 的停止条件认多格式：读不了就说，不再笼统写「�
   assert.ok(!/含未数字化的图片、语音时，停止并询问用户/.test(text), '0.5.0 起能读图与语音，旧口径该换掉')
 })
 
-// —— 示范库（F-11、F-24）。A-05 的验收是「十族有卡、无私有卡（含全部点子卡）、门禁绿」。
+// —— 示范库（F-11、F-24）。A-05 的验收是「十类型有卡、无私有卡（含全部点子卡）、门禁绿」。
 // 这些断言不是形式：示范库泄露一张私有卡，就是把作者的原创点子公开出去了。
 const DEMO = join(base, 'skills', 'material-vault', 'demo-vault')
 
@@ -1021,18 +1021,18 @@ function cardField(text, name) {
   return m ? m[1].trim() : ''
 }
 
-test('示范库十族各有一张卡，且不含开书点子族的任何卡', () => {
+test('示范库十类型各有一张卡，且不含开书点子类型的任何卡', () => {
   const cards = demoCards()
-  // 十一张：十族各一，S-07 两张（技巧一张、伏笔一张）。
-  // 原先钉的是「十张、十族各一」，S-09 的那张被查出「不对应具体作品却自称切片」后
+  // 十一张：十类型各一，S-07 两张（技巧一张、伏笔一张）。
+  // 原先钉的是「十张、十类型各一」，S-09 的那张被查出「不对应具体作品却自称切片」后
   // 换成了真切片，同时把伏笔的技巧内容拆出去另立一张 S-07——两张都是 S-07 的合理成员，
-  // 所以张数从十变十一、族数仍是十。
+  // 所以张数从十变十一、类型数仍是十。
   assert.equal(cards.length, 11, '示范库该是十一张卡，实际 ' + cards.length)
-  const families = cards.map((f) => cardField(readFileSync(f, 'utf8'), '类型族'))
+  const families = cards.map((f) => cardField(readFileSync(f, 'utf8'), '类型'))
   const distinct = [...new Set(families)].sort()
   const expected = ['S-02', 'S-03', 'S-04', 'S-05', 'S-06', 'S-07', 'S-08', 'S-09', 'S-10', 'S-11']
-  assert.deepEqual(distinct.map((f) => f.slice(0, 4)), expected, '十族应恰好是 S-02 至 S-11（S-07 两张可以）')
-  // 点子族整族不进示范库：那是作者的原创资产，泄露等于送人。
+  assert.deepEqual(distinct.map((f) => f.slice(0, 4)), expected, '十类型应恰好是 S-02 至 S-11（S-07 两张可以）')
+  // 点子类型整类型不进示范库：那是作者的原创资产，泄露等于送人。
   assert.ok(!families.some((f) => f.startsWith('S-01')), '示范库混进了开书点子，这是最严重的一类泄露')
 })
 
@@ -1053,7 +1053,7 @@ test('示范库的卡是活卡：find 能查到，索引读得到', () => {
   const r = run(['find', '--vault', DEMO, '--bucket', '故事零件', '--json'])
   assert.equal(r.code, 0)
   const payload = JSON.parse(r.stdout)
-  assert.ok(payload.data.count >= 5, '故事零件桶该至少有 5 张示范卡（S-02 至 S-06），实际 ' + payload.data.count)
+  assert.ok(payload.data.count >= 5, '故事零件大类该至少有 5 张示范卡（S-02 至 S-06），实际 ' + payload.data.count)
 })
 
 test('示范库的卡不含占位符与反引号 .md 路径', () => {
@@ -1082,9 +1082,9 @@ test('SKILL 与 05 都写了示范库的引导', () => {
 })
 
 
-test('示范库每张卡的维度行名与注册表该族要求逐行一致', () => {
+test('示范库每张卡的维度行名与注册表该类型要求逐行一致', () => {
   // 这条是最容易漏的：卡能写进去、check 也通过，但维度行名与注册表不符——
-  // writeCard 只校验基本信息与格式，不校验类型维度行名与族对不对应。
+  // writeCard 只校验基本信息与格式，不校验类型维度行名与类型对不对应。
   // 示范库是给新用户照抄的模板，行名错了会被抄一路。
   const reg = readFileSync(join(base, 'skills', 'material-vault', 'references', '类型注册表.md'), 'utf8')
   const fams = new Map()
@@ -1095,12 +1095,12 @@ test('示范库每张卡的维度行名与注册表该族要求逐行一致', ()
     const dims = seg[1].replace(/（[^）]*）/g, '').split(/[、，]/).map((s) => s.trim()).filter(Boolean)
     fams.set(row[1], dims)
   }
-  assert.ok(fams.size >= 10, '注册表解析出的族数偏少：' + fams.size)
+  assert.ok(fams.size >= 10, '注册表解析出的类型数偏少：' + fams.size)
 
   for (const f of demoCards()) {
     const text = readFileSync(f, 'utf8')
-    const id = (/- 类型族：(S-\d{2})/.exec(text) || [])[1]
-    assert.ok(id, f + ' 读不出类型族')
+    const id = (/- 类型：(S-\d{2})/.exec(text) || [])[1]
+    assert.ok(id, f + ' 读不出类型')
     const want = fams.get(id)
     assert.ok(want, id + ' 在注册表里没有维度要求')
     const sec = /## 类型维度\n([\s\S]*?)\n## /.exec(text)
@@ -1121,7 +1121,7 @@ function makeVault(cards) {
   for (const c of cards) {
     writeFileSync(jf, JSON.stringify({
       relPath: c.rel,
-      basic: { 卡名: c.卡名, 桶: '写作方法', 类型族: 'S-07 写作技巧', 子类: '叙事节奏',
+      basic: { 卡名: c.卡名, 大类: '写作方法', 类型: 'S-07 写作技巧', 细分: '叙事节奏',
         来源: '测试', 来源等级: '单源', 采集日期: c.采集日期, 时效状态: '长期', 要点: '测' },
       dimension: { 底层意图: 'x', 适用条件: 'x', 操作步骤: 'x', 反例: 'x' },
       body: { 内容: 'x', 已用在: c.已用在 ?? '', 补充记录: c.补充记录 ?? '' },
@@ -1264,7 +1264,7 @@ test('退休线的口径写进了流程：不用「检索命中」，用卡上�
 })
 
 
-// —— 复审清单（F-23）。周期口径 2026-10-24 定为按子类分档：
+// —— 复审清单（F-23）。周期口径 2026-10-24 定为按细分分档：
 // 热梗 3 个月、时事 6 个月、其余时效敏感 12 个月。这些用例钉住三件事：
 // 分档真的分开了、长期卡不进来、以及不声称探测过链接。
 function makeReviewVault(cards) {
@@ -1274,7 +1274,7 @@ function makeReviewVault(cards) {
   for (const c of cards) {
     writeFileSync(jf, JSON.stringify({
       relPath: c.rel,
-      basic: { 卡名: c.卡名, 桶: '现实避坑', 类型族: 'S-10 现实见闻', 子类: c.子类,
+      basic: { 卡名: c.卡名, 大类: '现实避坑', 类型: 'S-10 现实见闻', 细分: c.细分,
         来源: c.来源 ?? '测试', 出处链接: c.出处链接 ?? '', 来源等级: '单源',
         采集日期: c.采集日期, 时效状态: c.时效状态, 要点: '测' },
       dimension: { 事实要点: 'x', 来源与日期: 'x', 可改造方向: 'x', 时效状态: c.时效状态, 史料层次: '转引', 纪年: 'x' },
@@ -1286,12 +1286,12 @@ function makeReviewVault(cards) {
   return root
 }
 
-test('review 按子类分档算周期：热梗 3 个月、时事 6 个月、其余 12 个月', () => {
+test('review 按细分分档算周期：热梗 3 个月、时事 6 个月、其余 12 个月', () => {
   // 2026-10 为基准：热梗 4.8 个月已超期、时事 9.8 个月已超期、典故 33 个月已超期。
   const root = makeReviewVault([
-    { rel: '现实避坑/现实见闻/卡-20260601-梗.md', 采集日期: '2026-06-01', 时效状态: '现行', 子类: '网络热梗', 卡名: '梗' },
-    { rel: '现实避坑/现实见闻/卡-20260101-事.md', 采集日期: '2026-01-01', 时效状态: '现行', 子类: '时事热点', 卡名: '事' },
-    { rel: '现实避坑/现实见闻/卡-20240101-典.md', 采集日期: '2024-01-01', 时效状态: '待观察', 子类: '典故神话', 卡名: '典' },
+    { rel: '现实避坑/现实见闻/卡-20260601-梗.md', 采集日期: '2026-06-01', 时效状态: '现行', 细分: '网络热梗', 卡名: '梗' },
+    { rel: '现实避坑/现实见闻/卡-20260101-事.md', 采集日期: '2026-01-01', 时效状态: '现行', 细分: '时事热点', 卡名: '事' },
+    { rel: '现实避坑/现实见闻/卡-20240101-典.md', 采集日期: '2024-01-01', 时效状态: '待观察', 细分: '典故神话', 卡名: '典' },
   ])
   const r = run(['review', '--vault', root])
   assert.equal(r.code, 0)
@@ -1303,8 +1303,8 @@ test('review 按子类分档算周期：热梗 3 个月、时事 6 个月、其�
 test('review 不列还不到期的卡', () => {
   // 同一张热点风格，只是采得近；若分档写错（把热梗当成 12 个月或反之）这条会挂。
   const root = makeReviewVault([
-    { rel: '现实避坑/现实见闻/卡-20260901-新梗.md', 采集日期: '2026-09-01', 时效状态: '现行', 子类: '网络热梗', 卡名: '新梗' },
-    { rel: '现实避坑/现实见闻/卡-20260801-近事.md', 采集日期: '2026-08-01', 时效状态: '现行', 子类: '时事热点', 卡名: '近事' },
+    { rel: '现实避坑/现实见闻/卡-20260901-新梗.md', 采集日期: '2026-09-01', 时效状态: '现行', 细分: '网络热梗', 卡名: '新梗' },
+    { rel: '现实避坑/现实见闻/卡-20260801-近事.md', 采集日期: '2026-08-01', 时效状态: '现行', 细分: '时事热点', 卡名: '近事' },
   ])
   const r = run(['review', '--vault', root])
   assert.ok(!/^- 新梗$/m.test(r.stdout), '热梗才 1 个月，不该列')
@@ -1314,7 +1314,7 @@ test('review 不列还不到期的卡', () => {
 test('review 不列时效状态为长期的卡', () => {
   // 长期卡没有保鲜问题。把它们列进来只会淹没真正该看的那些。
   const root = makeReviewVault([
-    { rel: '现实避坑/现实见闻/卡-20200101-长.md', 采集日期: '2020-01-01', 时效状态: '长期', 子类: '职业细节', 卡名: '长' },
+    { rel: '现实避坑/现实见闻/卡-20200101-长.md', 采集日期: '2020-01-01', 时效状态: '长期', 细分: '职业细节', 卡名: '长' },
   ])
   const r = run(['review', '--vault', root])
   assert.match(r.stdout, /没有超期/, '长期卡再老也不该进复审清单')
@@ -1322,7 +1322,7 @@ test('review 不列时效状态为长期的卡', () => {
 
 test('review 报周期数值，并给 --json', () => {
   const root = makeReviewVault([
-    { rel: '现实避坑/现实见闻/卡-20200101-梗.md', 采集日期: '2020-01-01', 时效状态: '现行', 子类: '网络热梗', 卡名: '梗' },
+    { rel: '现实避坑/现实见闻/卡-20200101-梗.md', 采集日期: '2020-01-01', 时效状态: '现行', 细分: '网络热梗', 卡名: '梗' },
   ])
   const r = run(['review', '--vault', root])
   assert.match(r.stdout, /3 个月/, '该写清热梗的周期')
@@ -1336,7 +1336,7 @@ test('review 提链接但绝不声称链接已失效', () => {
   // 本技能离线可用、零依赖，从没去探测过链接。说「已失效」就是编。
   const root = makeReviewVault([
     { rel: '现实避坑/现实见闻/卡-20240101-链.md', 采集日期: '2024-01-01', 时效状态: '长期',
-      子类: '职业细节', 卡名: '链', 出处链接: 'https://example.com/a' },
+      细分: '职业细节', 卡名: '链', 出处链接: 'https://example.com/a' },
   ])
   const r = run(['review', '--vault', root])
   assert.match(r.stdout, /https:\/\/example\.com\/a/, '该把链接列出来让人去点')
@@ -1377,23 +1377,23 @@ test('06 浏览把「把过期的都删了」推回 04', () => {
 
 // —— 库况（F-28）。「待补」的定义来自 F-10：升级时机器补不出、填成
 // 「待补」的必填字段。这些用例钉住计数口径与「只读」。
-test('overview 报总卡数、各桶、各族与最近收卡日期', () => {
+test('overview 报总卡数、各大类、各类型与最近收卡日期', () => {
   const root = makeReviewVault([
-    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '甲' },
-    { rel: '现实避坑/现实见闻/卡-20261005-乙.md', 采集日期: '2026-10-05', 时效状态: '长期', 子类: '职业细节', 卡名: '乙' },
+    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 细分: '职业细节', 卡名: '甲' },
+    { rel: '现实避坑/现实见闻/卡-20261005-乙.md', 采集日期: '2026-10-05', 时效状态: '长期', 细分: '职业细节', 卡名: '乙' },
   ])
   const r = run(['overview', '--vault', root])
   assert.equal(r.code, 0)
   assert.match(r.stdout, /共 2 张卡/)
   assert.match(r.stdout, /2026-10-05/, '最近收卡应取最大采集日期')
-  assert.match(r.stdout, /按桶：/)
-  assert.match(r.stdout, /按类型族：/)
+  assert.match(r.stdout, /按大类：/)
+  assert.match(r.stdout, /按类型：/)
 })
 
 test('overview 数「待补」字段：定义取自 F-10 的升级占位值', () => {
   const root = makeReviewVault([
-    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '甲', 来源: '待补' },
-    { rel: '现实避坑/现实见闻/卡-20261001-乙.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '乙' },
+    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 细分: '职业细节', 卡名: '甲', 来源: '待补' },
+    { rel: '现实避坑/现实见闻/卡-20261001-乙.md', 采集日期: '2026-10-01', 时效状态: '长期', 细分: '职业细节', 卡名: '乙' },
   ])
   const r = run(['overview', '--vault', root])
   assert.match(r.stdout, /待补 1 处/, '只有一张卡的来源是待补')
@@ -1405,24 +1405,24 @@ test('overview 数「待补」字段：定义取自 F-10 的升级占位值', ()
 test('overview 的待复审数与 review 一致', () => {
   // 两处各算一遍若口径漂了，用户会看到两个互相矛盾的数。
   const root = makeReviewVault([
-    { rel: '现实避坑/现实见闻/卡-20260101-事.md', 采集日期: '2026-01-01', 时效状态: '现行', 子类: '时事热点', 卡名: '事' },
+    { rel: '现实避坑/现实见闻/卡-20260101-事.md', 采集日期: '2026-01-01', 时效状态: '现行', 细分: '时事热点', 卡名: '事' },
   ])
   const ov = JSON.parse(run(['overview', '--vault', root, '--json']).stdout)
   const rev = JSON.parse(run(['review', '--vault', root, '--json']).stdout)
   assert.equal(ov.data.review, rev.data.overdue.length)
 })
 
-test('overview 指出偏薄的族，--thin 可调', () => {
+test('overview 指出偏薄的类型，--thin 可调', () => {
   const root = makeReviewVault([
-    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '甲' },
+    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 细分: '职业细节', 卡名: '甲' },
   ])
-  assert.match(run(['overview', '--vault', root]).stdout, /偏薄的族/, '1 张少于默认薄线 5')
-  assert.ok(!run(['overview', '--vault', root, '--thin', '1']).stdout.includes('偏薄的族'), '薄线降到 1 就不该再提示')
+  assert.match(run(['overview', '--vault', root]).stdout, /偏薄的类型/, '1 张少于默认薄线 5')
+  assert.ok(!run(['overview', '--vault', root, '--thin', '1']).stdout.includes('偏薄的类型'), '薄线降到 1 就不该再提示')
 })
 
 test('overview 是只读的：跑完索引不变', () => {
   const root = makeReviewVault([
-    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '甲' },
+    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 细分: '职业细节', 卡名: '甲' },
   ])
   const before = readFileSync(join(root, 'INDEX.md'), 'utf8')
   run(['overview', '--vault', root])
@@ -1457,21 +1457,21 @@ test('06 浏览把「薄」说成提示而非错误，且薄线可调', () => {
 test('review 在清单为空时不多嘴解释复审怎么做', () => {
   // 没有该复审的卡就不必教人怎么复审，那句话只在真有清单时才有用。
   const root = makeReviewVault([
-    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 子类: '职业细节', 卡名: '甲' },
+    { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 细分: '职业细节', 卡名: '甲' },
   ])
   const r = run(['review', '--vault', root])
   assert.match(r.stdout, /没有超期/)
   assert.ok(!r.stdout.includes('复审的意思是'), '空清单时不该附上这套说明')
 })
-// —— 一句话查多族（F-25）。桶与类型族可给多个值，同级内是「或」。
-test('find 的 --family 支持多值，命中跨族结果', () => {
+// —— 一句话查多类型（F-25）。大类与类型可给多个值，同级内是「或」。
+test('find 的 --family 支持多值，命中跨类型结果', () => {
   const root = tmp()
   run(['init', '--vault', root])
   const jf = join(root, '.c.json')
-  const mk = (rel, 卡名, 族, 子类) => {
+  const mk = (rel, 卡名, 类型, 细分) => {
     writeFileSync(jf, JSON.stringify({
       relPath: rel,
-      basic: { 卡名, 桶: '故事零件', 类型族: 族, 子类, 来源: '测试', 来源等级: '单源',
+      basic: { 卡名, 大类: '故事零件', 类型: 类型, 细分, 来源: '测试', 来源等级: '单源',
         采集日期: '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' },
       dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
       body: { 内容: 'x', 已用在: '', 补充记录: '' },
@@ -1485,7 +1485,7 @@ test('find 的 --family 支持多值，命中跨族结果', () => {
   const one = run(['find', '--vault', root, '--family', 'S-02'])
   assert.match(one.stdout, /命中 1 张/)
   const two = run(['find', '--vault', root, '--family', 'S-02,S-03'])
-  assert.match(two.stdout, /命中 2 张/, '给两个族应命中两族的卡')
+  assert.match(two.stdout, /命中 2 张/, '给两个类型应命中两类型的卡')
   assert.match(two.stdout, /甲/)
   assert.match(two.stdout, /乙/)
   assert.ok(!/^- 丙$/m.test(two.stdout), '没点 S-04 就不该带出丙')
@@ -1495,10 +1495,10 @@ test('find 的 --bucket 支持多值，且全角逗号也认', () => {
   const root = tmp()
   run(['init', '--vault', root])
   const jf = join(root, '.c.json')
-  const mk = (rel, 卡名, 桶, 族, 子类, dim) => {
+  const mk = (rel, 卡名, 大类, 类型, 细分, dim) => {
     writeFileSync(jf, JSON.stringify({
       relPath: rel,
-      basic: { 卡名, 桶, 类型族: 族, 子类, 来源: '测试', 来源等级: '单源',
+      basic: { 卡名, 大类, 类型: 类型, 细分, 来源: '测试', 来源等级: '单源',
         采集日期: '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' },
       dimension: dim,
       body: { 内容: 'x', 已用在: '', 补充记录: '' },
@@ -1513,19 +1513,19 @@ test('find 的 --bucket 支持多值，且全角逗号也认', () => {
   const half = run(['find', '--vault', root, '--bucket', '故事零件'])
   assert.match(half.stdout, /命中 1 张/)
   const both = run(['find', '--vault', root, '--bucket', '故事零件,写作方法'])
-  assert.match(both.stdout, /命中 2 张/, '两个桶应各带出各自的卡')
+  assert.match(both.stdout, /命中 2 张/, '两个大类应各带出各自的卡')
   const full = run(['find', '--vault', root, '--bucket', '故事零件，写作方法'])
   assert.match(full.stdout, /命中 2 张/, '全角逗号也该认——中文输入法下很自然会打出来')
 })
 
-test('find 多族时按族分组，单族时不分组', () => {
+test('find 多类型时按类型分组，单类型时不分组', () => {
   const root = tmp()
   run(['init', '--vault', root])
   const jf = join(root, '.c.json')
-  const mk = (rel, 卡名, 族, 子类) => {
+  const mk = (rel, 卡名, 类型, 细分) => {
     writeFileSync(jf, JSON.stringify({
       relPath: rel,
-      basic: { 卡名, 桶: '故事零件', 类型族: 族, 子类, 来源: '测试', 来源等级: '单源',
+      basic: { 卡名, 大类: '故事零件', 类型: 类型, 细分, 来源: '测试', 来源等级: '单源',
         采集日期: '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' },
       dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
       body: { 内容: 'x', 已用在: '', 补充记录: '' },
@@ -1536,21 +1536,21 @@ test('find 多族时按族分组，单族时不分组', () => {
   mk('故事零件/剧情桥段/卡-20261001-乙.md', '乙', 'S-03 剧情桥段', '开局钩子')
 
   const multi = run(['find', '--vault', root, '--family', 'S-02,S-03'])
-  assert.match(multi.stdout, /【故事零件 \/ S-02 人物设定】/, '多族时该有分组表头')
+  assert.match(multi.stdout, /【故事零件 \/ S-02 人物设定】/, '多类型时该有分组表头')
   assert.match(multi.stdout, /【故事零件 \/ S-03 剧情桥段】/)
 
-  // 只给一个桶时结果里本来就有好几个族；分组会把清楚的东西切碎，反而难读。
+  // 只给一个大类时结果里本来就有好几个类型；分组会把清楚的东西切碎，反而难读。
   const single = run(['find', '--vault', root, '--bucket', '故事零件'])
-  assert.ok(!single.stdout.includes('【'), '单桶查询不该出现分组表头')
+  assert.ok(!single.stdout.includes('【'), '单大类查询不该出现分组表头')
 })
 
-test('find 多值里有一个桶名拼错时报错，而不是当成空结果', () => {
+test('find 多值里有一个大类名拼错时报错，而不是当成空结果', () => {
   // 拼错返回 0 行会被误读成「库里没有」，这是查重最危险的一种错。
   const root = tmp()
   run(['init', '--vault', root])
-  const r = run(['find', '--vault', root, '--bucket', '故事零件,不存在的桶'])
+  const r = run(['find', '--vault', root, '--bucket', '故事零件,不存在的大类'])
   assert.equal(r.code, 2)
-  assert.match(r.stdout, /不存在的桶/, '要指出是哪个值写错了')
+  assert.match(r.stdout, /不存在的大类/, '要指出是哪个值写错了')
   assert.ok(!r.stdout.includes('没有命中'), '拼错与「库里确实没有」必须分开')
 })
 
@@ -1559,15 +1559,15 @@ test('find 的 --bucket 只给逗号空格时仍算没给筛选项', () => {
   const root = tmp()
   run(['init', '--vault', root])
   const r = run(['find', '--vault', root, '--bucket', ' , '])
-  assert.equal(r.code, 2, '拆完一个桶都没有，等于没给筛选项')
+  assert.equal(r.code, 2, '拆完一个大类都没有，等于没给筛选项')
 })
 
 
-test('03 检索写了跨族查法，并要求空族如实说没查到', () => {
+test('03 检索写了跨类型查法，并要求空类型如实说没查到', () => {
   const text = workflow('03-检索.md')
   assert.match(text, /一次给多个值|多值/, '没写多值查法')
   assert.match(text, /逗号/, '没说多值怎么给')
-  assert.match(text, /空着的那族要如实说没查到|凑数/, '没拦住拿别族的卡凑数——这是多族查询最容易犯的错')
+  assert.match(text, /空着的那类型要如实说没查到|凑数/, '没拦住拿别类型的卡凑数——这是多类型查询最容易犯的错')
   assert.match(text, /不要拆成跑好几遍|不拆成/, '没拦住拆成多遍查')
 })
 
@@ -1582,7 +1582,7 @@ function makeProjectVault(marks) {
     i += 1
     writeFileSync(jf, JSON.stringify({
       relPath: m.rel,
-      basic: { 卡名: m.卡名, 桶: m.桶 ?? '故事零件', 类型族: m.族 ?? 'S-02 人物设定', 子类: m.子类 ?? '弧光模板',
+      basic: { 卡名: m.卡名, 大类: m.大类 ?? '故事零件', 类型: m.类型 ?? 'S-02 人物设定', 细分: m.细分 ?? '弧光模板',
         来源: '测试', 来源等级: '单源', 采集日期: '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' },
       dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x', 底层意图: 'x', 适用条件: 'x', 操作步骤: 'x', 反例: 'x', 事实要点: 'x', 来源与日期: 'x', 史料层次: '转引', 纪年: 'x' },
       body: { 内容: 'x', 已用在: m.已用在 ?? '', 补充记录: '' },
@@ -1674,7 +1674,7 @@ function makePackVault(specs) {
   for (const s of specs) {
     writeFileSync(jf, JSON.stringify({
       relPath: s.rel,
-      basic: { 卡名: s.卡名, 桶: '故事零件', 类型族: 'S-02 人物设定', 子类: '弧光模板',
+      basic: { 卡名: s.卡名, 大类: '故事零件', 类型: 'S-02 人物设定', 细分: '弧光模板',
         来源: '测试来源', 来源等级: '单源', 采集日期: '2026-10-01', 时效状态: '长期',
         要点: '测', 私有: s.私有 ?? '否' },
       dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
@@ -1794,8 +1794,8 @@ function makeObjectVault(specs) {
   assert.equal(run(['init', '--vault', root]).code, 0)
   const jf = join(root, '.c.json')
   for (const s of specs) {
-    const basic = { 卡名: s.卡名, 桶: s.桶 ?? '故事零件', 类型族: s.族 ?? 'S-02 人物设定',
-      子类: s.子类 ?? '角色卡', 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-01',
+    const basic = { 卡名: s.卡名, 大类: s.大类 ?? '故事零件', 类型: s.类型 ?? 'S-02 人物设定',
+      细分: s.细分 ?? '角色卡', 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-01',
       时效状态: '长期', 要点: '测', 私有: '否' }
     if (s.对象标识 !== undefined) basic.对象标识 = s.对象标识
     writeFileSync(jf, JSON.stringify({
@@ -1833,7 +1833,7 @@ test('find --object 不把相近的名字认成同一对象', () => {
 
 test('find --object 在缺「对象标识」的老卡上按卡名认', () => {
   const root = makeObjectVault([
-    { rel: '故事零件/剧情桥段/卡-20261001-乙.md', 卡名: '当众退婚打脸', 族: 'S-03 剧情桥段', 子类: '开局钩子' },
+    { rel: '故事零件/剧情桥段/卡-20261001-乙.md', 卡名: '当众退婚打脸', 类型: 'S-03 剧情桥段', 细分: '开局钩子' },
   ])
   assert.match(run(['find', '--vault', root, '--object', '当众退婚打脸']).stdout, /命中 1 张/)
 })
@@ -1844,7 +1844,7 @@ test('find --object 与其它筛选项是「与」', () => {
   ])
   assert.match(run(['find', '--vault', root, '--object', '五条悟', '--bucket', '故事零件']).stdout, /命中 1 张/)
   assert.match(run(['find', '--vault', root, '--object', '五条悟', '--bucket', '现实避坑']).stdout, /没有命中/,
-    '桶不同就不该命中：叠加是「与」不是「或」')
+    '大类不同就不该命中：叠加是「与」不是「或」')
 })
 
 test('find --object 单独给就算给了筛选项', () => {
@@ -1872,13 +1872,13 @@ test('01 采集的查重写明要用 --object 查同一对象', () => {
 
 // —— 补卡不建新卡（F-30 批二）。三种结局都不是失败，但要说清是哪一种。
 function addRun(root, spec) {
-  const basic = { 卡名: spec.卡名, 桶: spec.桶 ?? '故事零件', 类型族: spec.族 ?? 'S-02 人物设定',
-    子类: spec.子类 ?? '角色卡', 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-01',
+  const basic = { 卡名: spec.卡名, 大类: spec.大类 ?? '故事零件', 类型: spec.类型 ?? 'S-02 人物设定',
+    细分: spec.细分 ?? '角色卡', 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-01',
     时效状态: '长期', 要点: '测', 私有: '否' }
   if (spec.对象标识 !== undefined) basic.对象标识 = spec.对象标识
   if (spec.出自作品 !== undefined) basic.出自作品 = spec.出自作品
   const data = {
-    relPath: `${basic.桶}/${basic.类型族}/卡-20261001-${basic.卡名}.md`,
+    relPath: `${basic.大类}/${basic.类型}/卡-20261001-${basic.卡名}.md`,
     basic,
     dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
     body: { 内容: '这是' + spec.卡名 + '的正文', 已用在: '', 补充记录: '' },
@@ -2036,13 +2036,13 @@ test('add 建新卡时把本次的补充内容一并写进去', () => {
 
 test('add 认为跨类型不算重复，各自成卡并提示互相指认', () => {
   // F-30 原话：同一个人跨类型不算重复，人物设定卡和作品切片卡是两回事，用关联卡互指。
-  // 若不分族，想给同一个对象建第二类卡会被静默挡掉。
+  // 若不分类型，想给同一个对象建第二类卡会被静默挡掉。
   const root = addVault()
   addRun(root, { 卡名: '五条悟', 对象标识: '五条悟' })
-  const r = addRun(root, { 卡名: '五条悟', 对象标识: '五条悟', 桶: '作品案例', 族: 'S-09 作品切片', 子类: '人物' })
+  const r = addRun(root, { 卡名: '五条悟', 对象标识: '五条悟', 大类: '作品案例', 类型: 'S-09 作品切片', 细分: '人物' })
   assert.match(r.stdout, /已建新卡/, '跨类型该建新卡')
   assert.equal(cardTotal(root), 2)
-  assert.match(r.stdout, /别的类型族里已有卡/, '要提示跨类型已有卡')
+  assert.match(r.stdout, /别的类型里已有卡/, '要提示跨类型已有卡')
   assert.match(r.stdout, /关联卡/, '要提示把路径填进关联卡')
 })
 
@@ -2079,8 +2079,8 @@ test('01 采集的产物里保留了整表翻禁令', () => {
 // —— 查全库同对象双卡（F-30 批三）。J-05 原来的验证方式是「人工核对：索引无
 // 同对象双卡」——全库唯一一条靠人眼找双卡的硬判据，dupes 是它的机器替身。
 function writeDupCard(root, rel, spec) {
-  const basic = { 卡名: spec.卡名, 桶: spec.桶 ?? '故事零件', 类型族: spec.族 ?? 'S-02 人物设定',
-    子类: spec.子类 ?? '角色卡', 来源: '测试', 来源等级: '单源',
+  const basic = { 卡名: spec.卡名, 大类: spec.大类 ?? '故事零件', 类型: spec.类型 ?? 'S-02 人物设定',
+    细分: spec.细分 ?? '角色卡', 来源: '测试', 来源等级: '单源',
     采集日期: spec.采集日期 ?? '2026-10-01', 时效状态: '长期', 要点: '测', 私有: '否' }
   if (spec.对象标识 !== undefined) basic.对象标识 = spec.对象标识
   if (spec.出自作品 !== undefined) basic.出自作品 = spec.出自作品
@@ -2102,7 +2102,7 @@ test('dupes 在没有双卡时说没有', () => {
   assert.match(r.stdout, /没有同对象双卡/)
 })
 
-test('dupes 列出同族的同对象双卡，并建议留下较早那张', () => {
+test('dupes 列出同类型的同对象双卡，并建议留下较早那张', () => {
   const root = tmp()
   run(['init', '--vault', root])
   writeDupCard(root, '故事零件/S-02 人物设定/卡-20261001-五条悟.md', { 卡名: '五条悟', 对象标识: '五条悟', 采集日期: '2026-10-01' })
@@ -2122,7 +2122,7 @@ test('dupes 不把跨类型的同一对象算成双卡', () => {
   run(['init', '--vault', root])
   writeDupCard(root, '故事零件/S-02 人物设定/卡-20261001-五条悟.md', { 卡名: '五条悟', 对象标识: '五条悟' })
   writeDupCard(root, '作品案例/S-09 作品切片/卡-20261001-五条悟.md', {
-    卡名: '五条悟', 对象标识: '五条悟', 桶: '作品案例', 族: 'S-09 作品切片', 子类: '人物' })
+    卡名: '五条悟', 对象标识: '五条悟', 大类: '作品案例', 类型: 'S-09 作品切片', 细分: '人物' })
   const r = run(['dupes', '--vault', root])
   assert.match(r.stdout, /没有同对象双卡/, '跨类型各一张是对的，不是重复')
 })
@@ -2174,7 +2174,7 @@ test('add 给跨类型的同对象卡自动互指关联卡', () => {
   // 所以由机器填；只填一边则从旧卡查不到新卡，互指就成了单向。
   const root = addVault()
   addRun(root, { 卡名: '五条悟', 对象标识: '五条悟' })
-  const r = addRun(root, { 卡名: '五条悟', 对象标识: '五条悟', 桶: '作品案例', 族: 'S-09 作品切片', 子类: '人物' })
+  const r = addRun(root, { 卡名: '五条悟', 对象标识: '五条悟', 大类: '作品案例', 类型: 'S-09 作品切片', 细分: '人物' })
   assert.match(r.stdout, /已把两边的路径写进各自的「关联卡」/)
 
   const older = readFileSync(join(root, '故事零件/S-02 人物设定/卡-20261001-五条悟.md'), 'utf8')
@@ -2188,13 +2188,13 @@ after(() => {
   for (const dir of created) rmSync(dir, { recursive: true, force: true })
 })
 
-test('find --from-work 一次取出同一部作品跨族的卡', () => {
-  // F-32：一部作品的料分散在人设、世界设定、剧情桥段好几个族里。
+test('find --from-work 一次取出同一部作品跨类型的卡', () => {
+  // F-32：一部作品的料分散在人设、世界设定、剧情桥段好几个类型里。
   // 没有这条筛法，用户收完三十张后没法回答「幻界战线我收过什么」。
   const root = addVault()
   addRun(root, { 卡名: '雷欧', 对象标识: '雷欧', 出自作品: '幻界战线' })
   addRun(root, { 卡名: '扎普', 对象标识: '扎普', 出自作品: '幻界战线' })
-  addRun(root, { 卡名: '赫尔沙雷姆兹', 对象标识: '赫尔沙雷姆兹', 出自作品: '幻界战线', 桶: '故事零件', 族: 'S-04 世界设定', 子类: '底层规则' })
+  addRun(root, { 卡名: '赫尔沙雷姆兹', 对象标识: '赫尔沙雷姆兹', 出自作品: '幻界战线', 大类: '故事零件', 类型: 'S-04 世界设定', 细分: '底层规则' })
   addRun(root, { 卡名: '路飞', 对象标识: '路飞', 出自作品: '海贼王' })
 
   const r = run(['find', '--vault', root, '--from-work', '幻界战线'])
@@ -2202,7 +2202,7 @@ test('find --from-work 一次取出同一部作品跨族的卡', () => {
   const found = (r.stdout.match(/卡-2026\d+-/g) || []).length
   assert.match(r.stdout, /雷欧/)
   assert.match(r.stdout, /扎普/)
-  assert.match(r.stdout, /赫尔沙雷姆兹/, '跨族的那张也要取到')
+  assert.match(r.stdout, /赫尔沙雷姆兹/, '跨类型的那张也要取到')
   assert.doesNotMatch(r.stdout, /路飞/, '别的作品的卡不该串进来')
 })
 
@@ -2266,26 +2266,26 @@ test('读不了卡文件时 add 退 2，且错误信息里有行号', () => {
   assert.match(r.stderr + r.stdout, /第 \d+ 行/, '错误信息里没有行号')
 })
 
-test('find 多族时把「请求了但没有卡」的族也列出来，标 0 张', () => {
-  // 空族整组消失，读的人会以为「压根没查这个族」。而 03-检索.md 要求
-  // 「空着的那族要如实说没查到」——记账责任该在 find 这边：它收到了族名，
-  // 就知道哪个族问过、哪个是空的，不该推给调用方去记。
+test('find 多类型时把「请求了但没有卡」的类型也列出来，标 0 张', () => {
+  // 空类型整组消失，读的人会以为「压根没查这个类型」。而 03-检索.md 要求
+  // 「空着的那类型要如实说没查到」——记账责任该在 find 这边：它收到了类型名，
+  // 就知道哪个类型问过、哪个是空的，不该推给调用方去记。
   const root = addVault()
-  addRun(root, { 卡名: '牢里开局', 对象标识: '牢里开局', 族: 'S-03 剧情桥段', 子类: '开局钩子' })
+  addRun(root, { 卡名: '牢里开局', 对象标识: '牢里开局', 类型: 'S-03 剧情桥段', 细分: '开局钩子' })
   const r = run(['find', '--vault', root, '--family', 'S-03,S-04'])
   assert.equal(r.code, 0)
   assert.match(r.stdout, /S-04/, 'S-04 被请求了却没出现在输出里')
   assert.match(r.stdout, /0 张/, '没标明 S-04 是 0 张')
 })
 
-test('write 拒绝三层以上的卡路径：卡只能放 <桶>/<类型族>/卡-*.md', () => {
+test('write 拒绝三层以上的卡路径：卡只能放 <大类>/<类型>/卡-*.md', () => {
   // 三层路径会让库自相矛盾：find 走 INDEX 看得见，overview 走 listCards（depth ≤ 2）看不见。
   // 同一个库、同一时刻，两条命令给出不同的卡数——比「卡丢了」更难查。
   // 根因是 writeCard 对路径层级毫无校验，所以从入口就拒掉：
   const root = addVault()
   const card = {
     relPath: '故事零件/人物设定/人物动机库/卡-20261026-乙.md',
-    basic: { 卡名: '乙', 桶: '故事零件', 类型族: 'S-02 人物设定', 子类: '动机库', 来源: 'x', 来源等级: '单源', 采集日期: '2026-10-26', 时效状态: '长期', 私有: '否', 要点: '三层' },
+    basic: { 卡名: '乙', 大类: '故事零件', 类型: 'S-02 人物设定', 细分: '动机库', 来源: 'x', 来源等级: '单源', 采集日期: '2026-10-26', 时效状态: '长期', 私有: '否', 要点: '三层' },
     dimension: {},
     body: { 内容: 'x' },
   }
@@ -2293,7 +2293,7 @@ test('write 拒绝三层以上的卡路径：卡只能放 <桶>/<类型族>/卡-
   writeFileSync(f, JSON.stringify(card), 'utf8')
   const r = run(['write', '--vault', root, '--card', f])
   assert.notEqual(r.code, 0, '三层路径该被拒，实际通过了')
-  assert.match(r.stderr + r.stdout, /两层|层级|<桶>/, '错误信息没说明正确层级')
+  assert.match(r.stderr + r.stdout, /两层|层级|<大类>/, '错误信息没说明正确层级')
 })
 
 test('check 报出索引里落在三层的卡：老库里的坏路径也要能被发现', () => {
@@ -2310,4 +2310,46 @@ test('check 报出索引里落在三层的卡：老库里的坏路径也要能�
   const r = run(['check', '--vault', root])
   assert.equal(r.code, 1, 'check 该报错，实际通过了')
   assert.match(r.stderr + r.stdout, /三层|层级|两层/, 'check 没指出层级问题')
+})
+
+test('改名迁移：老库里写着 桶／类型族／子类 的卡，upgrade 一次后变成新字段名', () => {
+  // 0.11.0 把三个字段改了名。老库不迁移就会全线报「缺必填」——
+  // 而 upgrade 原先只会把不认识的名字挪进「历史字段」，值还在但不再是真字段。
+  const root = addVault()
+  const oldCard = [
+    '# 甲',
+    '',
+    '## 基本信息',
+    '',
+    '- 卡名：甲',
+    '- 桶：故事零件',
+    '- 类型族：S-02 人物设定',
+    '- 子类：原型基底',
+    '- 来源：测试',
+    '- 出处链接：',
+    '- 来源等级：单源',
+    '- 采集日期：2026-10-01',
+    '- 时效状态：长期',
+    '- 私有：否',
+    '- 要点：测',
+    '',
+    '## 类型维度',
+    '',
+    '## 正文',
+    '',
+    '- 内容：正文',
+    '',
+  ].join('\n')
+  const rel = '故事零件/人物设定/卡-20261001-甲.md'
+  mkdirSync(join(root, '故事零件/人物设定'), { recursive: true })
+  writeFileSync(join(root, rel), oldCard, 'utf8')
+
+  const up = run(['upgrade', '--vault', root])
+  assert.equal(up.code, 0, 'upgrade 该成功：' + up.stderr)
+  const after = readFileSync(join(root, rel), 'utf8')
+  assert.match(after, /- 大类：故事零件/, '没把 桶 迁成 大类')
+  assert.match(after, /- 类型：S-02 人物设定/, '没把 类型族 迁成 类型')
+  assert.match(after, /- 细分：原型基底/, '没把 子类 迁成 细分')
+  assert.doesNotMatch(after, /^- 桶：/m, '旧字段名还留着')
+  assert.equal(run(['check', '--vault', root]).code, 0, '迁移后 check 该通过')
 })

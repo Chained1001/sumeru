@@ -1,5 +1,5 @@
 // 项目自有测试：类型注册表是唯一事实源，本测试拦"注册表演进、下游漏改"的漂移。
-// 解析依据：注册表「动作」列的固定段式（按维度抽取：…；子类：…；产卡入 …）。
+// 解析依据：注册表「动作」列的固定段式（按维度抽取：…；细分：…；产卡入 …）。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, existsSync } from 'node:fs'
@@ -20,7 +20,7 @@ const agentsText = read('AGENTS.md')
 const BUCKETS = ['故事零件', '写作方法', '作品案例', '现实避坑']
 const CN_NUM = ['', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '十一', '十二', '十三', '十四', '十五']
 
-// —— 解析注册表族表：编号｜策略名（桶·族）｜动作（段式）｜不适用时
+// —— 解析注册表类型表：编号｜策略名（大类·类型）｜动作（段式）｜不适用时
 function parseRegistry() {
   const rows = []
   for (const m of registryText.matchAll(/^\| (S-\d{2}) \| ([^|]+) \| [^|]* \| ([^|]*) \| ([^|]*) \|/gm)) {
@@ -32,7 +32,7 @@ function parseRegistry() {
     const segs = {}
     for (const seg of actionCell.split('；')) {
       const s = seg.trim()
-      for (const key of ['按维度抽取：', '子类：', '产卡入']) {
+      for (const key of ['按维度抽取：', '细分：', '产卡入']) {
         if (s.startsWith(key)) segs[key] = s.slice(key.length).trim()
       }
     }
@@ -44,20 +44,20 @@ function parseRegistry() {
 const families = parseRegistry()
 const familyIds = families.map((f) => f.id)
 
-test('注册表族表可解析：每行三段齐、桶合法、编号从 01 连续', () => {
-  assert.ok(families.length >= 10, `族表只解析到 ${families.length} 行，解析器或注册表格式坏了`)
+test('注册表类型表可解析：每行三段齐、大类合法、编号从 01 连续', () => {
+  assert.ok(families.length >= 10, `类型表只解析到 ${families.length} 行，解析器或注册表格式坏了`)
   families.forEach((f) => {
-    assert.ok(BUCKETS.includes(f.bucket), `${f.id} 桶名「${f.bucket}」不在四桶之内`)
-    for (const key of ['按维度抽取：', '子类：', '产卡入']) {
+    assert.ok(BUCKETS.includes(f.bucket), `${f.id} 大类名「${f.bucket}」不在四个大类之内`)
+    for (const key of ['按维度抽取：', '细分：', '产卡入']) {
       assert.ok(f.segs[key], `${f.id} 动作列缺「${key}」段`)
     }
     const expectPath = `素材库/${f.bucket}/${f.family}/`
-    assert.equal(f.segs['产卡入'], expectPath, `${f.id} 产卡入路径与「桶/族」推导不一致`)
+    assert.equal(f.segs['产卡入'], expectPath, `${f.id} 产卡入路径与「大类/类型」推导不一致`)
   })
   assert.deepEqual(familyIds, familyIds.map((_, i) => `S-${String(i + 1).padStart(2, '0')}`), 'S 编号须从 01 起连续')
 })
 
-test('注册表改道引用只指向存在的族', () => {
+test('注册表改道引用只指向存在的类型', () => {
   for (const f of families) {
     for (const ref of f.fallback.matchAll(/S-\d{2}/g)) {
       assert.ok(familyIds.includes(ref[0]), `${f.id}「不适用时」引用了不存在的 ${ref[0]}`)
@@ -78,27 +78,27 @@ test('权威源分级编号接续注册表，无碰撞', () => {
 test('判据 J-02 上界＝注册表最大编号', () => {
   const j02 = /^\| J-02 \|.*$/m.exec(judgeText)?.[0] ?? ''
   const bound = new RegExp(`S-01 至 S-(\\d{2})`).exec(j02)?.[1]
-  assert.equal(bound, String(familyIds.length).padStart(2, '0'), 'J-02 的编号上界与注册表族数不一致')
+  assert.equal(bound, String(familyIds.length).padStart(2, '0'), 'J-02 的编号上界与注册表类型数不一致')
 })
 
-test('采集员任务书声明的编号范围落在本桶族内', () => {
+test('采集员任务书声明的编号范围落在本大类类型内', () => {
   for (const bucket of BUCKETS) {
     const path = `skills/material-vault/agents/${bucket}采集.md`
-    assert.ok(existsSync(join(base, path)), `缺 ${path}（派工约定按桶名取件）`)
-    const rangeLine = /^\| 类型族编号 \|.*$/m.exec(read(path))?.[0] ?? ''
-    assert.ok(rangeLine, `${path} 缺「类型族编号」声明行`)
+    assert.ok(existsSync(join(base, path)), `缺 ${path}（派工约定按大类名取件）`)
+    const rangeLine = /^\| 类型编号 \|.*$/m.exec(read(path))?.[0] ?? ''
+    assert.ok(rangeLine, `${path} 缺「类型编号」声明行`)
     const own = families.filter((f) => f.bucket === bucket).map((f) => f.id)
     for (const ref of rangeLine.matchAll(/S-\d{2}/g)) {
-      assert.ok(own.includes(ref[0]), `${path} 编号范围声明含 ${ref[0]}，不属本桶（${bucket}：${own.join('、')}）；改道提示可跨桶，但范围声明不行`)
+      assert.ok(own.includes(ref[0]), `${path} 编号范围声明含 ${ref[0]}，不属本大类（${bucket}：${own.join('、')}）；改道提示可跨大类，但范围声明不行`)
     }
   }
 })
 
-test('SKILL 入口第一问只写四桶，不复制子类清单', () => {
+test('SKILL 入口第一问只写四个大类，不复制细分清单', () => {
   const q1 = /1\. 第一问[^\n]*/.exec(skillText)?.[0] ?? ''
-  for (const b of BUCKETS) assert.ok(q1.includes(b), `第一问缺桶名「${b}」`)
+  for (const b of BUCKETS) assert.ok(q1.includes(b), `第一问缺大类名「${b}」`)
   for (const canary of ['开书点子', '反面教材', '金句语料']) {
-    assert.ok(!q1.includes(canary), `第一问又复制了子类清单（含「${canary}」）——菜单归注册表与索引，此处删`)
+    assert.ok(!q1.includes(canary), `第一问又复制了细分清单（含「${canary}」）——菜单归注册表与索引，此处删`)
   }
 })
 
@@ -109,10 +109,10 @@ test('eval 用例的落卡路径＝注册表 S-02 的产卡路径', () => {
   assert.equal(pathInEval, s02.segs['产卡入'], '用例 C-02 路径与注册表产卡路径漂移')
 })
 
-test('README 与 AGENTS 的族数口径＝注册表族数', () => {
+test('README 与 AGENTS 的类型数口径＝注册表类型数', () => {
   const cn = CN_NUM[families.length]
   for (const [name, text] of [['README', readmeText], ['AGENTS', agentsText]]) {
-    assert.ok(text.includes(`${cn}个类型族`), `${name} 未写「${cn}个类型族」——与注册表（${families.length} 族）漂移`)
+    assert.ok(text.includes(`${cn}个类型`), `${name} 未写「${cn}个类型」——与注册表（${families.length} 类型）漂移`)
   }
 })
 
@@ -229,8 +229,8 @@ test('判据 J-28：收集作品时卡上要写「出自作品」，且与对象
   assert.match(j28, /from-work/, 'J-28 没给核对方法')
 })
 
-test('按作品收集策略文件存在，七维清单齐全，且与注册表的族号对得上', () => {
-  // 策略是查表，表里写的族号若与注册表漂移，用户点名的作品会收错族。
+test('按作品收集策略文件存在，七维清单齐全，且与注册表的类型号对得上', () => {
+  // 策略是查表，表里写的类型号若与注册表漂移，用户点名的作品会收错类型。
   const policy = read('skills/material-vault/references/按作品收集策略.md')
   const registry = read('skills/material-vault/references/类型注册表.md')
 
@@ -238,11 +238,11 @@ test('按作品收集策略文件存在，七维清单齐全，且与注册表�
     assert.ok(policy.includes(dim), `策略缺「${dim}」这一维`)
   }
   // 策略里出现的每个 S-xx 都必须真实存在。注意 S- 号段跨两个文件：
-  // S-01..S-11 在类型注册表（类型族），S-12..S-17 在权威源分级（取源策略）。
+  // S-01..S-11 在类型注册表（类型），S-12..S-17 在权威源分级（取源策略）。
   // 只查注册表会把合法的 S-16（地域政策）误判成编造。
   const tier = read('skills/material-vault/references/权威源分级.md')
   const cited = [...policy.matchAll(/S-(\d\d)/g)].map((m) => m[1])
-  assert.ok(cited.length >= 7, `策略只提到 ${cited.length} 个族，七维至少七个`)
+  assert.ok(cited.length >= 7, `策略只提到 ${cited.length} 个类型，七维至少七个`)
   for (const n of new Set(cited)) {
     const re = new RegExp(`^\\| S-${n} \\|`, 'm')
     assert.ok(re.test(registry) || re.test(tier), `策略引用了不存在的 S-${n}`)
@@ -350,7 +350,7 @@ test('07 收编不让写失败的文件进进度：否则那张卡永久漏采',
 })
 
 test('判据 J-11 说清组件卡要写自己的对象标识，否则会被 add 当补卡吞掉', () => {
-  // 实测：整卡「路飞式主角」与组件卡「口头禅」同族、同对象标识时，
+  // 实测：整卡「路飞式主角」与组件卡「口头禅」同类型、同对象标识时，
   // add 按 J-05 判成「已有这张卡」，组件卡静默丢失——而 J-11 又要求
   // 「组件卡按需另拆并与整卡互设关联」。两条规则打架，输的是组件卡。
   // 换成写自己的对象标识（如「路飞式主角·口头禅」）就能正常建卡。
