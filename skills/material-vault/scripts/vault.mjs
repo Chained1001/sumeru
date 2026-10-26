@@ -11,7 +11,7 @@ import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, FIELD_NAMES, REQUIRED_FIEL
 
 export { FIELDS, INDEX_COLUMNS, defaultPrivate, checkBasic }
 // 格式版本：1 是老库（卡上无「私有」行），2 起「私有」必填。升级见 upgradeVault。
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 // 卡字段改名映射：旧名 → 新名。只在 upgrade 里用一次，认完即删。
 // 老库不认这一步的话，旧名会被当成退役字段挪进「历史字段」，值还在但不是真字段。
@@ -106,11 +106,26 @@ function renderCard(card) {
     return `## ${title}\n\n${lines.join('\n')}\n`
   }
   const dims = Object.entries(card.dimension ?? {}).map(([k, v]) => `- ${k}：${v}`)
+
+  // 正文只留「素材本身说了什么」与台账。
+  //
+  // 「内容」原先是把类型维度再复述一遍——维度已经写了性格核、冲突结构、操作步骤，
+  // 再来一段「这是一种可复用的 XX 骨架」等于同义反复（示范库十一张里八张是这形状）。
+  // 「借鉴意图」记的是作者当初为什么存它，是动机不是素材，换个人看毫无用处。
+  //
+  // 换上来的是「为什么管用」：五本原文读下来，这是任何素材被调用时都会被问的
+  // 第一个问题——凭什么有效、什么条件下失效。它既不是「怎么用」（那是写书项目
+  // 的方法论），也不是评价，而是这个设计本身的机制。
+  //
+  // 正文只出模板里的行：未知键不再追加到末尾。旧字段（内容、借鉴意图）靠 upgrade
+  // 迁进「历史正文」，不是静默丢掉——但也不许继续躺在卡上冒充现行契约。
+  const BODY_ORDER = ['为什么管用', '原文摘录或事实要点', '已用在', '关联卡', '补充记录', '历史正文']
+  const body = Object.fromEntries(Object.entries(card.body ?? {}).filter(([k]) => BODY_ORDER.includes(k)))
   return [
     `# ${basic.卡名 ?? '素材卡'}\n`,
     section('基本信息', basic, [...FIELDS.map((f) => f.名), ...extra]),
     `## 类型维度\n\n${dims.join('\n')}\n`,
-    section('正文', card.body ?? {}, ['内容', '原文摘录或事实要点', '借鉴意图', '已用在', '关联卡', '补充记录']),
+    section('正文', body, BODY_ORDER),
   ].join('\n')
 }
 
@@ -559,13 +574,13 @@ export function packCards(root, { paths, work, date = new Date() } = {}) {
     out.push(`- 时效：${c.basic.时效状态 ?? ''}；来源等级：${c.basic.来源等级 ?? ''}`)
     if (c.basic.来源) out.push(`- 来源：${c.basic.来源}`)
     if (c.basic.出处链接) out.push(`- 出处：${c.basic.出处链接}`)
-    // 正文只取「内容」「原文摘录或事实要点」「借鉴意图」三行：
+    // 正文只取「为什么管用」与「原文摘录或事实要点」两行：
+    // 前者是这条素材凭什么有效——调用方最需要的一句；后者是它能被核实的凭据。
     // 「关联卡」「补充记录」是库内维护用的，喂给写作助手只会变成噪音；
     // 「已用在」是作者自己的账，也不该跟着素材一起流出去。
     const sections = [
-      ['内容', c.body.内容],
+      ['为什么管用', c.body.为什么管用],
       ['原文摘录或事实要点', c.body.原文摘录或事实要点],
-      ['借鉴意图', c.body.借鉴意图],
     ]
     for (const [label, value] of sections) {
       const v = String(value ?? '').trim()
@@ -1380,9 +1395,25 @@ export function upgradeVault(root, { dryRun = false } = {}) {
       filled.push(`历史字段+${retired.join('、')}`)
     }
 
+    // 正文改名：0.14.0 起「内容」与「借鉴意图」退场，换成「为什么管用」。
+    // 老卡上的值不能静默丢——挪进「历史正文」，人还能看见自己当初写了什么。
+    // 注意它与「历史字段」是两回事：一个管基本信息，一个管正文。
+    const body = { ...card.body }
+    const retiredBody = []
+    for (const k of ['内容', '借鉴意图']) {
+      if (body[k] === undefined) continue
+      const val = String(body[k]).trim()
+      if (val) retiredBody.push(`${k}=${val}`)
+      delete body[k]
+    }
+    if (retiredBody.length) {
+      body.历史正文 = body.历史正文 ? `${body.历史正文}；${retiredBody.join('；')}` : retiredBody.join('；')
+      filled.push('正文→历史正文')
+    }
+
     if (filled.length === 0) continue
 
-    const next = { basic, dimension: card.dimension, body: card.body }
+    const next = { basic, dimension: card.dimension, body }
     const after = renderCard(next)
     // 内容相同就不写：字段可能被补成它本来就等价的空值，那种情况不该刷新 mtime。
     if (after === before) continue

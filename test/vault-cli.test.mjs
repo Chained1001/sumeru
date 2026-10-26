@@ -92,7 +92,7 @@ test('init 一次写齐身份证、索引表头与四个大类目录', () => {
     assert.ok(existsSync(join(lib, name)), `init 未建出 ${name}`)
   }
   const meta = readFileSync(join(lib, 'VAULT.md'), 'utf8')
-  assert.match(meta, /版本：3/)
+  assert.match(meta, /版本：4/)
   assert.match(meta, /简介：我的库/)
 })
 
@@ -289,7 +289,7 @@ test('upgrade 实跑：补私有、版本升 2、check 通过', () => {
   assert.equal(r.code, 0, r.stdout + r.stderr)
   assert.match(readFileSync(cards[0], 'utf8'), /^- 私有：否$/m)
   assert.match(readFileSync(cards[1], 'utf8'), /^- 私有：是$/m)
-  assert.match(readFileSync(join(lib, 'VAULT.md'), 'utf8'), /版本：3/)
+  assert.match(readFileSync(join(lib, 'VAULT.md'), 'utf8'), /版本：4/)
   assert.equal(run(['check', '--vault', lib]).code, 0, '升级后 check 应通过')
 })
 
@@ -1678,7 +1678,7 @@ function makePackVault(specs) {
         来源: '测试来源', 来源等级: '单源', 采集日期: '2026-10-01', 时效状态: '长期',
         要点: '测', 私有: s.私有 ?? '否' },
       dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
-      body: { 内容: '内容' + s.卡名, 原文摘录或事实要点: '', 借鉴意图: '借鉴' + s.卡名,
+      body: { 为什么管用: '管用' + s.卡名, 原文摘录或事实要点: '',
         已用在: '《我的书》第 1 章', 关联卡: '', 补充记录: '2026-01-01 补过' },
     }), 'utf8')
     assert.equal(run(['write', '--vault', root, '--card', jf]).code, 0)
@@ -1718,8 +1718,8 @@ test('pack 不把作者自己的账带出去', () => {
   const root = makePackVault([{ rel: '故事零件/人物设定/卡-20261001-甲.md', 卡名: '甲' }])
   const r = packRun(['pack', '--vault', root, '--paths', '故事零件/人物设定/卡-20261001-甲.md'])
   const text = readFileSync(/→ (.+)$/m.exec(r.stdout)[1].trim(), 'utf8')
-  assert.match(text, /内容甲/, '正文该带出去')
-  assert.match(text, /借鉴甲/, '借鉴意图该带出去')
+  assert.match(text, /管用甲/, '「为什么管用」该带出去——调用方最需要的一句')
+  assert.doesNotMatch(text, /借鉴甲/, '「借鉴意图」已从契约里删掉，不该再导出')
   assert.ok(!text.includes('已用在'), '「已用在」是作者的账，不该导出')
   assert.ok(!text.includes('补充记录'), '「补充记录」是库内维护用的')
   assert.ok(!text.includes('关联卡'))
@@ -1881,7 +1881,7 @@ function addRun(root, spec) {
     relPath: `${basic.大类}/${basic.类型}/卡-20261001-${basic.卡名}.md`,
     basic,
     dimension: { 核心欲望: 'x', 致命弱点: 'x', 可改造方向: 'x', 借鉴意图: 'x' },
-    body: { 内容: '这是' + spec.卡名 + '的正文', 已用在: '', 补充记录: '' },
+    body: { 为什么管用: '这是' + spec.卡名 + '的正文', 已用在: '', 补充记录: '' },
   }
   if (spec.补充内容 !== undefined) data.补充内容 = spec.补充内容
   const f = join(root, '.in.json')
@@ -2387,4 +2387,25 @@ test('cardpoints 把 C 类条目标出来：库里有料不等于这个问题能
   assert.match(r.stdout, /#16 [^\n]*（1 张）/, '#16 该报 1 张')
   assert.match(r.stdout, /#9 [^\n]*C 类/, '#9 卡文 该标出 C 类')
   assert.doesNotMatch(r.stdout, /#16 [^\n]*C 类/, '#16 是 A 类，不该被标成 C 类')
+})
+
+test('卡上要写「为什么管用」，不再有「内容」与「借鉴意图」：后两者一个复述维度、一个只记动机', () => {
+  // 素材库只供料、并体现素材本身的设计逻辑。五本原文读出来的结论是：
+  // 一张卡最该留的是「这个设计凭什么有效、什么时候失效」，
+  // 而不是把维度再复述一遍（内容），也不是记作者当初为什么存它（借鉴意图）。
+  const root = addVault()
+  const card = {
+    relPath: '故事零件/人物设定/卡-20261001-甲.md',
+    basic: { 卡名: '甲', 大类: '故事零件', 类型: 'S-02 人物设定', 细分: '原型基底', 来源: '测试', 来源等级: '单源', 采集日期: '2026-10-01', 时效状态: '长期', 私有: '否', 要点: '测' },
+    dimension: { 性格核: 'x' },
+    body: { 为什么管用: '强者示弱的反差制造期待，因为每次嚣张都有兑现', 内容: '这段应当被丢掉', 借鉴意图: '这段也应当被丢掉' },
+  }
+  const f = join(root, '.c.json')
+  writeFileSync(f, JSON.stringify(card), 'utf8')
+  const r = run(['write', '--vault', root, '--card', f])
+  assert.equal(r.code, 0, '写卡该成功：' + (r.stderr || r.stdout))
+  const text = readFileSync(join(root, card.relPath), 'utf8')
+  assert.match(text, /- 为什么管用：强者示弱的反差制造期待/, '没写出「为什么管用」')
+  assert.doesNotMatch(text, /- 内容：/, '旧字段「内容」不该再出现在卡上')
+  assert.doesNotMatch(text, /- 借鉴意图：/, '旧字段「借鉴意图」不该再出现在卡上')
 })
