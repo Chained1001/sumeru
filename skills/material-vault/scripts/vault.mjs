@@ -127,6 +127,23 @@ function writeAtomic(file, text) {
 // 校验不通过时不写任何文件，把问题交回调用方。
 // 已存在的卡按「盘上的值打底、本次传入的覆盖」合并：升级器写进「历史字段」的老值、
 // 以及调用方这次没提及的字段，都不会因为重写而蒸发。
+// 卡的相对路径必须是「两层目录 + 一个文件名」：`<桶>/<类型族>/卡-<YYYYMMDD>-<短名>.md`。
+//
+// 为什么卡死在两层：库里同时存在两条遍历——`find` 走 INDEX、`overview` 走 `listCards`，
+// 而 `listCards` 只下钻两层（`if (depth > 2) return`）。路径再深一层，两条路就看见
+// 不同的库：同一个库、同一时刻，`find` 报「命中 1 张」而 `overview` 报「库是空的」。
+// 这种自相矛盾比卡丢了更难查——卡丢了人会去找，数字打架人只会以为记错了。
+export function cardPathProblem(rel) {
+  const parts = String(rel ?? '').split(/[\\/]+/).filter(Boolean)
+  if (parts.length !== 3) {
+    return `卡的相对路径必须是「<桶>/<类型族>/卡-<日期>-<短名>.md」——两层目录加一个文件名；给的是 ${parts.length} 段：${rel}`
+  }
+  if (!BUCKETS.includes(parts[0])) {
+    return `路径第一层必须是四个桶之一（${BUCKETS.join('、')}），给的是「${parts[0]}」`
+  }
+  return ''
+}
+
 export function writeCard(root, card, relPath) {
   const rel = relPath ?? card?.relPath ?? ''
   const file = rel ? join(root, rel) : ''
@@ -139,6 +156,10 @@ export function writeCard(root, card, relPath) {
 
   const issues = checkBasic(basic)
   if (!rel) issues.push('缺相对路径：卡放在 <桶>/<类型族>/卡-<YYYYMMDD>-<短名>.md')
+  else {
+    const pathProblem = cardPathProblem(rel)
+    if (pathProblem) issues.push(pathProblem)
+  }
   if (issues.length) return { ok: false, issues, relPath: rel }
 
   const next = {
@@ -169,6 +190,12 @@ export function checkVault(root) {
     // 已删卡片/ 里的卡不是活卡：索引里还留着它的行，说明 delete 只搬了文件没清索引。
     if (isTrashed(row.相对路径)) issues.push(`索引里仍有已删卡的行：${row.相对路径}，说明删卡没做干净，跑一次 index rebuild`)
     else if (!existsSync(join(root, row.相对路径))) issues.push(`索引行指向不存在的卡：${row.相对路径}`)
+    // 索引里躺着的卡也要校路径层级：入口拒掉只管将来，老库里已经深了一层的得被喊出来，
+    // 否则它 find 看得见、overview 看不见，库自己前后矛盾。
+    else {
+      const pathProblem = cardPathProblem(row.相对路径)
+      if (pathProblem) issues.push(`索引行路径层级不对：${pathProblem}`)
+    }
   }
 
   for (const rel of listCards(root)) {

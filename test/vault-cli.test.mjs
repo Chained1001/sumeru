@@ -3,7 +3,7 @@
 // 因此这些用例在禁止子进程管道的沙箱里照样跑（那条 spawn 探测只剩一条端到端用例需要）。
 import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, statSync, readdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, statSync, readdirSync, appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -2276,4 +2276,38 @@ test('find 多族时把「请求了但没有卡」的族也列出来，标 0 张
   assert.equal(r.code, 0)
   assert.match(r.stdout, /S-04/, 'S-04 被请求了却没出现在输出里')
   assert.match(r.stdout, /0 张/, '没标明 S-04 是 0 张')
+})
+
+test('write 拒绝三层以上的卡路径：卡只能放 <桶>/<类型族>/卡-*.md', () => {
+  // 三层路径会让库自相矛盾：find 走 INDEX 看得见，overview 走 listCards（depth ≤ 2）看不见。
+  // 同一个库、同一时刻，两条命令给出不同的卡数——比「卡丢了」更难查。
+  // 根因是 writeCard 对路径层级毫无校验，所以从入口就拒掉：
+  const root = addVault()
+  const card = {
+    relPath: '故事零件/人物设定/人物动机库/卡-20261026-乙.md',
+    basic: { 卡名: '乙', 桶: '故事零件', 类型族: 'S-02 人物设定', 子类: '动机库', 来源: 'x', 来源等级: '单源', 采集日期: '2026-10-26', 时效状态: '长期', 私有: '否', 要点: '三层' },
+    dimension: {},
+    body: { 内容: 'x' },
+  }
+  const f = join(root, '.deep.json')
+  writeFileSync(f, JSON.stringify(card), 'utf8')
+  const r = run(['write', '--vault', root, '--card', f])
+  assert.notEqual(r.code, 0, '三层路径该被拒，实际通过了')
+  assert.match(r.stderr + r.stdout, /两层|层级|<桶>/, '错误信息没说明正确层级')
+})
+
+test('check 报出索引里落在三层的卡：老库里的坏路径也要能被发现', () => {
+  // 入口拒掉只管将来；已经躺在库里的三层卡得靠 check 报。
+  const root = addVault()
+  addRun(root, { 卡名: '甲', 对象标识: '甲' })
+  // 手工往索引塞一行三层路径，并造出那个文件
+  const deepRel = '故事零件/人物设定/人物动机库/卡-20261026-乙.md'
+  mkdirSync(join(root, '故事零件/人物设定/人物动机库'), { recursive: true })
+  writeFileSync(join(root, deepRel), '# 乙\n\n## 基本信息\n\n- 卡名：乙\n', 'utf8')
+  const idx = join(root, 'INDEX.md')
+  const line = '| 乙 | 故事零件 | S-02 人物设定 | 动机库 | 三层 | 长期 | ' + deepRel + ' |\n'
+  appendFileSync(idx, line, 'utf8')
+  const r = run(['check', '--vault', root])
+  assert.equal(r.code, 1, 'check 该报错，实际通过了')
+  assert.match(r.stderr + r.stdout, /三层|层级|两层/, 'check 没指出层级问题')
 })
