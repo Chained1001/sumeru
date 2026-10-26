@@ -381,7 +381,7 @@ test('触发卡点表的条目只写现象不写评价，且分清了「不适�
     const cells = row.split('|').map((s) => s.trim())
     const 类 = cells[3]
     if (类 !== 'A') continue
-    const 现象 = cells[5]
+    const 现象 = cells[6]
     for (const w of BAD) {
       assert.ok(!现象.includes(w), `A 类条目「${cells[2]}」的现象列里还有评价词「${w}」：${现象}`)
     }

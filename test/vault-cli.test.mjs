@@ -2353,3 +2353,38 @@ test('改名迁移：老库里写着 桶／类型族／子类 的卡，upgrade �
   assert.doesNotMatch(after, /^- 桶：/m, '旧字段名还留着')
   assert.equal(run(['check', '--vault', root]).code, 0, '迁移后 check 该通过')
 })
+
+test('cardpoints 在空库上不报错：全缺口是正常结论，退出码 0', () => {
+  // 缺口不是失败。空库时每条卡点都是 0 张，这是「该去采什么」的答案，
+  // 不是「命令出错了」。若退非 0，调用方会把它当成故障而不是待办。
+  const root = addVault()
+  const r = run(['cardpoints', '--vault', root])
+  assert.equal(r.code, 0, '空库该退 0，实际：' + (r.stderr || r.stdout))
+  assert.match(r.stdout, /0 条有料/, '空库该报「0 条有料」')
+  assert.match(r.stdout, /缺口/, '没报出缺口两个字')
+})
+
+test('cardpoints 按类型＋细分数：只按类型数，会把同类型下无关的卡点也算成有料', () => {
+  // 卡点表里 #16 节奏失衡 与 #17 视角混乱 都指向 S-07 写作技巧。
+  // 库里只有一张「叙事节奏」的卡时：#16 有料（1 张），#17 必须是缺口（0 张）。
+  // 若实现偷懒只按类型数，两张都会变成 1——那等于告诉用户「视角问题库里有料」，
+  // 而实际上库里一张视角的卡都没有。缺口报错的代价，是用户白跑一趟。
+  const root = addVault()
+  addRun(root, { 卡名: '控节奏', 对象标识: '控节奏', 大类: '写作方法', 类型: 'S-07 写作技巧', 细分: '叙事节奏' })
+  const r = run(['cardpoints', '--vault', root])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /#16 [^\n]*（1 张）/, '#16 节奏失衡 该报 1 张')
+  assert.match(r.stdout, /#17 [^\n]*（0 张）/, '#17 视角混乱 必须报 0 张：按类型数会把它错算成 1')
+})
+
+test('cardpoints 把 C 类条目标出来：库里有料不等于这个问题能靠库回答', () => {
+  // #9 卡文、#10 起名难 这类条目即使库里有卡，也不能回答「作者当时怎么了」。
+  // 输出里若不标，读的人会把「有 1 张」当成「这个问题库能解决」。
+  const root = addVault()
+  addRun(root, { 卡名: '控节奏', 对象标识: '控节奏', 大类: '写作方法', 类型: 'S-07 写作技巧', 细分: '叙事节奏' })
+  const r = run(['cardpoints', '--vault', root])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /#16 [^\n]*（1 张）/, '#16 该报 1 张')
+  assert.match(r.stdout, /#9 [^\n]*C 类/, '#9 卡文 该标出 C 类')
+  assert.doesNotMatch(r.stdout, /#16 [^\n]*C 类/, '#16 是 A 类，不该被标成 C 类')
+})

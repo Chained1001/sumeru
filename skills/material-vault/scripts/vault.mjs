@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, dirname, relative, sep, basename, isAbsolute, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 import { checkBasic, indexRow, INDEX_COLUMNS, FIELDS, FIELD_NAMES, REQUIRED_FIELDS, BUCKETS, defaultPrivate, objectKey, objectKeyOf } from './cardFormat.mjs'
 
 export { FIELDS, INDEX_COLUMNS, defaultPrivate, checkBasic }
@@ -1461,6 +1461,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
   pack              把选中的卡打包成一份引用文件，私有卡一律不进（F-27）
   add               补卡不建新卡：已有就跳过或补进旧卡，没有才建（F-30）
   dupes             查全库同对象双卡，只列不改（F-30）
+  cardpoints        按 references/触发卡点表.md 对照本库：每条卡点有几张卡、缺口是哪几条
 
 选项
   --vault <路径>    库根；不给则按 detect 的三层判定
@@ -1493,7 +1494,7 @@ const USAGE = `用法：node scripts/vault.mjs <子命令> [选项]
 
 // 参数一律长名，短名只留 -h：短名一多，隔几个月就没人记得住哪个字母是什么。
 const FLAGS_WITH_VALUE = new Set(['--vault', '--intro', '--card', '--path', '--field', '--value', '--section', '--from', '--into', '--bucket', '--family', '--sub', '--keyword', '--source', '--fingerprint', '--done', '--months', '--work', '--chapter', '--thin', '--paths', '--out', '--object', '--from-work'])
-const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview', 'project', 'pack', 'add', 'dupes'])
+const KNOWN_COMMANDS = new Set(['detect', 'init', 'check', 'write', 'index', 'upgrade', 'card', 'find', 'collect', 'retire', 'used', 'review', 'overview', 'project', 'pack', 'add', 'dupes', 'cardpoints'])
 // 每个 card 动作的必填参数，形如 [选项名, 用法里的写法]。缺参数是参数错误（2），
 // 不该等撞上「未找到库」或「卡不存在」才报——那样调用方无从区分自己拼错了什么。
 export const CARD_ACTION_FLAGS = {
@@ -2006,6 +2007,56 @@ export function runCli(argv, io = {}) {
     emit(
       { ok: true, errors: [], data: { count: result.rows.length, narrowed: result.narrowed, rows: result.rows, buckets: result.buckets, families: result.families, emptyFamilies, object: result.object, groups: [...byFamily.keys()] } },
       [head, list, emptyList].filter(Boolean).join('\n\n'),
+    )
+    return 0
+  }
+
+  if (options.cmd === 'cardpoints') {
+    // 卡点表是技能自带的，不在库里：它是路由与缺口账，不是库的内容（D-38）。
+    // 所以它读库、但不改库——这个命令与 find 一样是只读的。
+    const tablePath = join(dirname(fileURLToPath(import.meta.url)), '..', 'references', '触发卡点表.md')
+    if (!existsSync(tablePath)) {
+      emit({ ok: false, error: '缺 references/触发卡点表.md，无从计算缺口', data: {} }, '缺 references/触发卡点表.md，无从计算缺口')
+      return 3
+    }
+    const rows = []
+    for (const line of readFileSync(tablePath, 'utf8').split(/\r?\n/)) {
+      if (!/^\| \d+ \|/.test(line)) continue
+      const c = line.split('|').map((s) => s.trim())
+      if (c.length < 7) continue
+      rows.push({ n: Number(c[1]), 卡点: c[2], 类: c[3].replace(/\*\*/g, '').trim(), 类型: c[4], 细分: c[5], 证据: c[7] })
+    }
+    const index = readIndex(root)
+    const covered = []
+    const gaps = []
+    const uncal = []
+    for (const r of rows) {
+      // 必须按「类型＋细分」两层数。只按类型数会把同类型下不相干的卡点也算成有料：
+      // #16 节奏失衡 与 #17 视角混乱 同属 S-07，库里只有叙事节奏的卡时，
+      // 按类型数会把 #17 也报成 1，等于告诉用户「视角问题库里有料」——用户白跑一趟。
+      const wanted = r.类型.split('／').map((s) => s.trim()).filter(Boolean)
+      const subs = r.细分.split('、').map((s) => s.trim()).filter(Boolean)
+      const hit = index.filter(
+        (row) => wanted.some((w) => matchesText(row.类型, w)) && subs.some((s) => matchesText(row.细分, s)),
+      )
+      // 未校准的条目照常计数，但单列：它们不是「库里有没料」，是「这条本身还没验过」。
+      if (String(r.证据).startsWith('未校准')) uncal.push({ ...r, count: hit.length })
+      else (hit.length ? covered : gaps).push({ ...r, count: hit.length })
+    }
+    const head = `卡点覆盖：${covered.length} 条有料，缺口 ${gaps.length} 条，未校准 ${uncal.length} 条（库内 ${index.length} 张卡）`
+    // C 类要标出来：库里有料不等于这个问题能靠库回答。#9 卡文即使库里有技巧卡，
+    // 也回答不了「作者当时怎么了」——不标，读的人会把「1 张」当成「能解决」。
+    const line = (x) => `- #${x.n} ${x.卡点} → ${x.类型}（${x.count} 张${x.类 === 'C' ? ' · C 类：只能靠作者自述，卡给的是料不是答案' : ''}）`
+    const body = [
+      covered.length ? `有料：\n${covered.map(line).join('\n')}` : '',
+      gaps.length ? `缺口：\n${gaps.map(line).join('\n')}` : '',
+      uncal.length ? `未校准（这几条还没被样本验过，不计入缺口结论）：\n${uncal.map(line).join('\n')}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+    emit(
+      { ok: true, errors: [], data: { covered: covered.length, gaps: gaps.length, uncalibrated: uncal.length, cards: index.length, items: [...covered, ...gaps, ...uncal] } },
+      [head, body].filter(Boolean).join('\n\n'),
     )
     return 0
   }
