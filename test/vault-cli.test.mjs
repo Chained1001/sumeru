@@ -1023,11 +1023,15 @@ function cardField(text, name) {
 
 test('示范库十族各有一张卡，且不含开书点子族的任何卡', () => {
   const cards = demoCards()
-  assert.equal(cards.length, 10, '示范库该是十张卡（十族各一），实际 ' + cards.length)
+  // 十一张：十族各一，S-07 两张（技巧一张、伏笔一张）。
+  // 原先钉的是「十张、十族各一」，S-09 的那张被查出「不对应具体作品却自称切片」后
+  // 换成了真切片，同时把伏笔的技巧内容拆出去另立一张 S-07——两张都是 S-07 的合理成员，
+  // 所以张数从十变十一、族数仍是十。
+  assert.equal(cards.length, 11, '示范库该是十一张卡，实际 ' + cards.length)
   const families = cards.map((f) => cardField(readFileSync(f, 'utf8'), '类型族'))
   const distinct = [...new Set(families)].sort()
   const expected = ['S-02', 'S-03', 'S-04', 'S-05', 'S-06', 'S-07', 'S-08', 'S-09', 'S-10', 'S-11']
-  assert.deepEqual(distinct.map((f) => f.slice(0, 4)), expected, '十族应恰好是 S-02 至 S-11')
+  assert.deepEqual(distinct.map((f) => f.slice(0, 4)), expected, '十族应恰好是 S-02 至 S-11（S-07 两张可以）')
   // 点子族整族不进示范库：那是作者的原创资产，泄露等于送人。
   assert.ok(!families.some((f) => f.startsWith('S-01')), '示范库混进了开书点子，这是最严重的一类泄露')
 })
