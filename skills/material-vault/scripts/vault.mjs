@@ -1946,16 +1946,25 @@ export function runCli(argv, io = {}) {
     const head = result.rows.length
       ? `命中 ${result.rows.length} 张（收窄条件：${result.narrowed.join('、')}）`
       : `没有命中（收窄条件：${result.narrowed.join('、')}）——库里可能确实没有，也可能筛得太窄，可放宽再试`
+    // 请求了但没有卡的族，也要报出来。
+    //
+    // find 收到了族名，所以它知道哪个族问过、哪个是空的；而「空着的那族要如实
+    // 说没查到」原先只能靠调用方自己记住问过哪些族。记账责任放在这边更稳——
+    // 调用方漏记一次，读的人就会以为「压根没查这个族」，而且没有任何提示。
+    const emptyFamilies = multiFamily
+      ? (result.families ?? []).filter((f) => !result.rows.some((r) => matchesText(r.类型族, f)))
+      : []
     const list = [...byFamily.entries()]
       .map(([group, items]) => {
         const lines = items.map((r) => `- ${r.卡名}\n  子类：${r.子类}；要点：${r.要点}\n  ${r.相对路径}`)
         return multiFamily ? `【${group}】${items.length} 张\n${lines.join('\n')}` : lines.join('\n')
       })
       .join('\n\n')
+    const emptyList = emptyFamilies.map((f) => `【${f}】0 张\n库里没有这一族的卡`).join('\n\n')
     // 查重结果为空不是失败：库里没有这张卡是正常结论，退出码仍是 0。
     emit(
-      { ok: true, errors: [], data: { count: result.rows.length, narrowed: result.narrowed, rows: result.rows, buckets: result.buckets, families: result.families, object: result.object, groups: [...byFamily.keys()] } },
-      [head, list].filter(Boolean).join('\n'),
+      { ok: true, errors: [], data: { count: result.rows.length, narrowed: result.narrowed, rows: result.rows, buckets: result.buckets, families: result.families, emptyFamilies, object: result.object, groups: [...byFamily.keys()] } },
+      [head, list, emptyList].filter(Boolean).join('\n\n'),
     )
     return 0
   }

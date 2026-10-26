@@ -2261,3 +2261,15 @@ test('读不了卡文件时 add 退 2，且错误信息里有行号', () => {
   assert.equal(r.code, 2, '坏 JSON 是参数错误，退 2')
   assert.match(r.stderr + r.stdout, /第 \d+ 行/, '错误信息里没有行号')
 })
+
+test('find 多族时把「请求了但没有卡」的族也列出来，标 0 张', () => {
+  // 空族整组消失，读的人会以为「压根没查这个族」。而 03-检索.md 要求
+  // 「空着的那族要如实说没查到」——记账责任该在 find 这边：它收到了族名，
+  // 就知道哪个族问过、哪个是空的，不该推给调用方去记。
+  const root = addVault()
+  addRun(root, { 卡名: '牢里开局', 对象标识: '牢里开局', 族: 'S-03 剧情桥段', 子类: '开局钩子' })
+  const r = run(['find', '--vault', root, '--family', 'S-03,S-04'])
+  assert.equal(r.code, 0)
+  assert.match(r.stdout, /S-04/, 'S-04 被请求了却没出现在输出里')
+  assert.match(r.stdout, /0 张/, '没标明 S-04 是 0 张')
+})
