@@ -366,3 +366,31 @@ test('判据 J-11 说清组件卡要写自己的对象标识，否则会被 add 
   assert.match(fmt, /组件卡要写自己的对象标识/, '版式没写这条，只写在判据里等于只写了一半')
   assert.match(fmt, /静默消失|被当补卡/, '版式没说明沿用会怎样')
 })
+
+test('触发卡点表的条目只写现象不写评价，且分清了「不适用」与「没出现」', () => {
+  // J-30 的机器侧。分歧实测过：同一批条目让不同分析员判，一个说可验一个说不可验，
+  // 分歧全落在「现象＋评价」的混合命名上——「打斗没有压迫感」里可判的只有「打斗」，
+  // 「压迫感」判不了。拆掉评价后两边就一致了。
+  const doc = read('skills/material-vault/references/触发卡点表.md')
+
+  // 评价词不许出现在可判的现象列里
+  const BAD = ['生硬', '刻意', '不足', '不落地', '发腻', '压迫感']
+  const rows = doc.split('\n').filter((l) => /^\| \d+ \|/.test(l))
+  assert.ok(rows.length >= 20, `卡点条目太少，只找到 ${rows.length} 条`)
+  for (const row of rows) {
+    const cells = row.split('|').map((s) => s.trim())
+    const 类 = cells[3]
+    if (类 !== 'A') continue
+    const 现象 = cells[5]
+    for (const w of BAD) {
+      assert.ok(!现象.includes(w), `A 类条目「${cells[2]}」的现象列里还有评价词「${w}」：${现象}`)
+    }
+  }
+
+  // 三条口径必须在文里写死，否则读的人会自己发明
+  assert.match(doc, /不适用/, '没写「不适用」这一档')
+  assert.match(doc, /不许记「没出现」|不能记「没出现」|记「不适用」，\*\*不许记/, '没写清「不适用」与「没出现」的区别')
+  assert.match(doc, /载体/, '没写载体差异')
+  assert.match(doc, /只能靠自述|只能靠创作谈/, 'C 类没写清只能靠自述')
+  assert.match(doc, /不手填/, '第三列该由脚本算，文档里没写死')
+})
