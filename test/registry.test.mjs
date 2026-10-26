@@ -436,3 +436,21 @@ test('S-07 写作技巧要有「正例」：反例只说不行，正例才是能
   const guide = read('skills/material-vault/agents/写作方法采集.md')
   assert.match(guide, /正例/, '写作方法采集.md 没要求交正例')
 })
+
+test('S-11 有「平台雷区」这一细分，且卡点表 #14 指向它', () => {
+  // 作家视角的原话：「平台雷区（审核红线、下架、举报点）才是网文最疼的坑」。
+  // 现有细分（俗套雷点／人设坑／逻辑错误／读者反感写法）全是写作层面的，
+  // 没有一条是平台侧的——踩了不扣分，直接下架。
+  const reg = read('skills/material-vault/references/类型注册表.md')
+  const row = /^\| S-11 \|.*$/m.exec(reg)?.[0] ?? ''
+  assert.ok(row, '注册表缺 S-11')
+  const dims = /细分：([^；|]+)/.exec(row)?.[1] ?? ''
+  assert.match(dims, /平台雷区/, `S-11 的细分里没有「平台雷区」：${dims}`)
+
+  // 卡点表 #14 问的就是平台红线，它的细分必须指向这一格，否则 cardpoints 数的是别的卡
+  const table = read('skills/material-vault/references/触发卡点表.md')
+  const r14 = /^\| 14 \|.*$/m.exec(table)?.[0] ?? ''
+  assert.ok(r14, '卡点表缺 #14')
+  const cells = r14.split('|')
+  assert.match(cells[5] ?? '', /平台雷区/, `#14 的细分该含「平台雷区」，实际是「${cells[5]}」`)
+})
