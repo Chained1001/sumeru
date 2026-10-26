@@ -394,3 +394,27 @@ test('触发卡点表的条目只写现象不写评价，且分清了「不适�
   assert.match(doc, /只能靠自述|只能靠创作谈/, 'C 类没写清只能靠自述')
   assert.match(doc, /不手填/, '第三列该由脚本算，文档里没写死')
 })
+
+test('卡点表引用的每个细分，注册表里都得有：否则 cardpoints 会永远报假缺口', () => {
+  // 注册表是「细分」的事实源。卡点表若引用了注册表没有的值，采集员不会用它，
+  // 于是那条卡点永远报缺口——不是因为库里没料，是因为没人知道该用哪个词。
+  const reg = read('skills/material-vault/references/类型注册表.md')
+  const known = new Set()
+  for (const line of reg.split('\n')) {
+    const m = /细分：([^；|]+)/.exec(line)
+    if (m) for (const s of m[1].split('、')) if (s.trim()) known.add(s.trim())
+  }
+  assert.ok(known.size > 30, `注册表只解析出 ${known.size} 个细分，正则可能没匹配上`)
+
+  const table = read('skills/material-vault/references/触发卡点表.md')
+  const missing = new Set()
+  for (const line of table.split('\n')) {
+    if (!/^\| \d+ \|/.test(line)) continue
+    const cells = line.split('|')
+    for (const s of (cells[5] ?? '').split('、')) {
+      const v = s.trim()
+      if (v && !known.has(v)) missing.add(v)
+    }
+  }
+  assert.equal(missing.size, 0, `卡点表用了注册表里没有的细分：${[...missing].join('、')}`)
+})
