@@ -558,6 +558,53 @@ export function packCards(root, { paths, work, date = new Date() } = {}) {
 // 三种结果都不是错误（退出码都是 0），但要说清是哪一种：
 //   skipped —— 已有这张卡，且这次的内容它已经有了
 //   appended —— 已有这张卡，把新内容追加进「补充记录」
+// 把 JSON.parse 的报错翻译成能定位的话。
+//
+// 为什么值得单独做：产卡时最高频的两个错是「中文字段里要引用书名，敲了 ASCII 双引号」
+// 与「文件带 BOM」。原生报错只说 position 372，人得自己数到第 372 个字符才找得到；
+// 而 BOM 更隐蔽——它让报错指到第 1 行第 1 列，看起来完全不像 BOM 的问题。
+export function jsonProblem(text, err, label) {
+  const msg = String(err?.message ?? err)
+  const lc = /line (\d+) column (\d+)/.exec(msg)
+  const pos = /position (\d+)/.exec(msg)
+  let line = null
+  let col = null
+  if (lc) {
+    line = Number(lc[1])
+    col = Number(lc[2])
+  } else if (pos) {
+    const n = Number(pos[1])
+    const before = text.slice(0, n)
+    line = before.split('\n').length
+    col = n - before.lastIndexOf('\n')
+  }
+
+  const bom = text.charCodeAt(0) === 0xfeff
+  const out = [`${label}：不是合法 JSON`]
+  if (bom) {
+    out.push('  文件开头有 BOM（U+FEFF），JSON.parse 不认。用无 BOM 的 UTF-8 重写即可。')
+    out.push('  PowerShell 的 Set-Content -Encoding utf8 会带 BOM；改用 [System.IO.File]::WriteAllText + UTF8Encoding($false)。')
+  } else {
+    out.push(`  ${msg}`)
+  }
+  if (line != null) {
+    out.push(`  第 ${line} 行${col != null ? ` 第 ${col} 列` : ''}`)
+    const raw = String(text.split('\n')[line - 1] ?? '')
+    out.push(`  > ${raw.length > 140 ? raw.slice(0, 140) + '…' : raw}`)
+    if (col != null && col <= 140) out.push(`  ${' '.repeat(2 + Math.max(0, col - 1))}^`)
+  } else {
+    // V8 有一部分报错（如 `Unexpected token '}'`）根本不带 position。
+    // 这时退化成按行编号列出——卡 JSON 通常几十行，人一眼就能扫到坏在哪。
+    const all = text.split('\n')
+    out.push(`  没有位置信息，按行编号列出（共 ${all.length} 行，最多显示 40 行）：`)
+    for (const [i, raw] of all.slice(0, 40).entries()) {
+      out.push(`  第 ${i + 1} 行：${raw.length > 140 ? raw.slice(0, 140) + '…' : raw}`)
+    }
+    if (all.length > 40) out.push(`  …还有 ${all.length - 40} 行未显示`)
+  }
+  return out.join('\n')
+}
+
 //   created —— 库里还没有这张卡，按正常路径建一张
 // 只有参数不合法才是退出码 2。
 export function addMaterial(root, { card, date = new Date() } = {}) {
@@ -566,12 +613,18 @@ export function addMaterial(root, { card, date = new Date() } = {}) {
   // 顺带兑现 USAGE 里写的「- 表示从标准输入读」——原写法 readFileSync('-')
   // 只会去找一个名叫 `-` 的文件。
   let input
+  let text = ''
   if (typeof card === 'string') {
     try {
-      const text = card === '-' ? readFileSync(0, 'utf8') : readFileSync(card, 'utf8')
+      text = card === '-' ? readFileSync(0, 'utf8') : readFileSync(card, 'utf8')
       input = JSON.parse(text)
     } catch (e) {
-      const why = e.code === 'ENOENT' ? `找不到文件：${card}` : e instanceof SyntaxError ? `不是合法 JSON：${card}` : `读不了文件：${card}`
+      const why =
+        e.code === 'ENOENT'
+          ? `找不到文件：${card}`
+          : e instanceof SyntaxError
+            ? jsonProblem(text, e, card)
+            : `读不了文件：${card}`
       return { ok: false, issues: [why], action: null, code: 'E_ARGS' }
     }
   } else {
@@ -1927,11 +1980,12 @@ export function runCli(argv, io = {}) {
       return 3
     }
     let payload
+    let cardText = ''
     try {
-      const text = options.card === '-' ? readFileSync(0, 'utf8') : readFileSync(options.card, 'utf8')
-      payload = JSON.parse(text)
+      cardText = options.card === '-' ? readFileSync(0, 'utf8') : readFileSync(options.card, 'utf8')
+      payload = JSON.parse(cardText)
     } catch (error) {
-      err(`读不出卡内容：${error.message}`)
+      err(error instanceof SyntaxError ? jsonProblem(cardText, error, options.card) : `读不出卡内容：${error.message}`)
       return 2
     }
     const result = writeCard(root, payload, payload.relPath)

@@ -1,6 +1,6 @@
 {
   "name": "sumeru",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "private": true,
   "description": "灵感素材技能包：零散写作素材入库成卡与按需检索",
   "license": "MIT",

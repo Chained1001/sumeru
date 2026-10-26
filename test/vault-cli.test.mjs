@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { runCli, parseCliArgs } from '../skills/material-vault/scripts/vault.mjs'
+import { runCli, parseCliArgs, jsonProblem } from '../skills/material-vault/scripts/vault.mjs'
 
 const base = join(dirname(fileURLToPath(import.meta.url)), '..')
 const created = []
@@ -2228,4 +2228,36 @@ test('add 建的卡会保留「出自作品」', () => {
   addRun(root, { 卡名: '雷欧', 对象标识: '雷欧', 出自作品: '幻界战线' })
   const body = readFileSync(join(root, '故事零件/S-02 人物设定/卡-20261001-雷欧.md'), 'utf8')
   assert.match(body, /出自作品：幻界战线/)
+})
+
+test('JSON 写坏时报错能定位到行与列，并指出那一行', () => {
+  // 产卡时最高频的错是「中文字段里要引用书名，敲了 ASCII 双引号」。
+  // 原生报错只说 position 73，人得自己数到第 73 个字符才找得到。
+  const text = '{\n  "a": 1,\n  "卡名": "「作为一个词语，"活着"充满了力量」"\n}'
+  let err
+  try { JSON.parse(text) } catch (e) { err = e }
+  const msg = jsonProblem(text, err, '卡.json')
+  assert.match(msg, /不是合法 JSON/)
+  assert.match(msg, /第 3 行/, '没给出所在行')
+  assert.match(msg, /「作为一个词语/, '没把出问题的那一行摘出来')
+  assert.match(msg, /\^/, '没给出定位符')
+})
+
+test('文件带 BOM 时单独点出来，而不是让它伪装成别的位置错误', () => {
+  // BOM 不在 position 里体现，报错会指到第 1 行第 1 列，看起来完全不像 BOM 的问题。
+  const text = '\uFEFF{"a":1}'
+  let err
+  try { JSON.parse(text) } catch (e) { err = e }
+  const msg = jsonProblem(text, err, '卡.json')
+  assert.match(msg, /BOM/, '没认出 BOM')
+  assert.match(msg, /UTF8Encoding/, '没给出不带 BOM 的写法')
+})
+
+test('读不了卡文件时 add 退 2，且错误信息里有行号', () => {
+  const root = addVault()
+  const f = join(root, '.broken.json')
+  writeFileSync(f, '{\n  "a":\n}', 'utf8')
+  const r = run(['add', '--vault', root, '--card', f])
+  assert.equal(r.code, 2, '坏 JSON 是参数错误，退 2')
+  assert.match(r.stderr + r.stdout, /第 \d+ 行/, '错误信息里没有行号')
 })
