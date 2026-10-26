@@ -311,3 +311,16 @@ test('榜单策略说清了去重的三种形态与一个例外', () => {
   assert.match(policy, /多卷/, '缺「同作品多卷」')
   assert.match(policy, /前篇/, '缺「前篇/后篇不合并」这个例外')
 })
+
+test('03 检索区分「筛得太窄」与「库里确实没有」，不一律建议采集', () => {
+  // find 在无命中时自己会说「库里可能确实没有，也可能筛得太窄」（vault.mjs）。
+  // 而 03 的停止条件原先只写「建议先采集」——库里有卡、只是筛窄了的时候，
+  // 照那句读会把用户赶去白建卡。两支必须分开写。
+  const wf = read('skills/material-vault/workflows/03-检索.md')
+  const stop = wf.slice(wf.indexOf('## 停止条件'))
+  assert.match(stop, /太窄|放宽/, '停止条件没提「筛得太窄」这一支')
+  assert.match(stop, /确实没有|确实没/, '停止条件没提「库里确实没有」这一支')
+  // 两支要给出不同的去处：放宽筛选 vs 去采集。只写「建议先采集」不够。
+  assert.match(stop, /放宽/, '没给出「放宽筛选」这个动作')
+  assert.match(stop, /采集/, '没给出「去采集」这个动作')
+})
