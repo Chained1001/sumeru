@@ -266,3 +266,48 @@ test('策略的来源等级口径与 J-09 一致，并交代了别名怎么办',
   assert.match(policy, /别名|译名/, '策略没交代一部作品多个译名时怎么办')
   assert.match(policy, /固定用一个名字|统一/, '策略没给出「固定用一个名字」的做法')
 })
+
+test('判据 J-29：榜单四元信息齐备，且把「数据事实」与「推断」分开', () => {
+  // F-33 的地基。这条判据若被删，榜单卡会退化成「一堆没有出处的名次」。
+  const judge = read('skills/material-vault/references/入库判据.md')
+  const j29 = /^\| J-29 \|.*$/m.exec(judge)?.[0] ?? ''
+  assert.ok(j29, '判据缺 J-29')
+  for (const k of ['榜名', '时点', '排序口径', '过滤条件']) {
+    assert.match(j29, new RegExp(k), `J-29 没写「${k}」`)
+  }
+  assert.match(j29, /推断/, 'J-29 没要求把推断标出来')
+  assert.match(j29, /J-26/, 'J-29 没接上 J-26 的「原始发布方」口径')
+})
+
+test('榜单取数策略写了三层选源优先级与人数门槛', () => {
+  const policy = read('skills/material-vault/references/榜单取数策略.md')
+  assert.match(policy, /平台自带加权/, '缺「平台自带加权榜」这层')
+  assert.match(policy, /分类排行榜/, '缺「分类排行榜」这层')
+  assert.match(policy, /标签页按评分排序/, '缺「标签页按评分排序」这层')
+  assert.match(policy, /1000/, '缺默认人数门槛')
+  // 三层必须是有序的，不是并列罗列。
+  // 只在「选源优先级」这一节内比较顺序：文档开头「榜名」那行举例里也含「分类排行榜」，
+  // 用全局 indexOf 会被那处举例提前命中，误判成顺序颠倒。
+  const sec = policy.slice(policy.indexOf('## 选源优先级'))
+  const a = sec.indexOf('平台自带加权')
+  const b = sec.indexOf('分类排行榜')
+  const c = sec.indexOf('标签页按评分排序')
+  assert.ok(a >= 0 && b >= 0 && c >= 0, '「选源优先级」一节里三层不齐')
+  assert.ok(a < b && b < c, '三层选源没有按优先级排序')
+})
+
+test('榜单策略记了通道能力边界：能用的与不能用的分开', () => {
+  // 这张表是实测出来的，删了就得重新趟一遍死路。
+  const policy = read('skills/material-vault/references/榜单取数策略.md')
+  assert.match(policy, /能用的/, '缺「能用的」通道表')
+  assert.match(policy, /不能用的/, '缺「不能用的」通道表')
+  assert.match(policy, /起点|晋江|番茄/, '没记「平台榜需登录」这条')
+  assert.match(policy, /top250/i, '没记豆瓣 Top250 这条可用通道')
+})
+
+test('榜单策略说清了去重的三种形态与一个例外', () => {
+  const policy = read('skills/material-vault/references/榜单取数策略.md')
+  assert.match(policy, /多版本/, '缺「同作品多版本」')
+  assert.match(policy, /多卷/, '缺「同作品多卷」')
+  assert.match(policy, /前篇/, '缺「前篇/后篇不合并」这个例外')
+})
