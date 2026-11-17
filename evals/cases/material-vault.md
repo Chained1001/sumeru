@@ -58,4 +58,4 @@
 | 入口两问与调度 | C-01 |
 | 01 第 1–5 步 | C-02、C-03、C-04、C-05、C-06 |
 
-`workflows/02-调研采集.md` 与 `workflows/03-检索.md` 的用例待素材库建成后另立；同一对象再积累的补卡规则（判据 J-05）待库有同名卡后另立用例。
+调研与检索用例分别见 `material-vault-调研采集.md`、`material-vault-检索.md`；同一对象再积累的补卡规则由 `test/vault-cli.test.mjs` 的 `add` 用例核对。2026-11-17 的离线 agent 自测见 `../runs/2026-11-17-offline.md`，不替代独立人工验收。
