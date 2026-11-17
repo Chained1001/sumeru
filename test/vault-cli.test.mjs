@@ -1417,7 +1417,22 @@ test('overview 指出偏薄的类型，--thin 可调', () => {
     { rel: '现实避坑/现实见闻/卡-20261001-甲.md', 采集日期: '2026-10-01', 时效状态: '长期', 细分: '职业细节', 卡名: '甲' },
   ])
   assert.match(run(['overview', '--vault', root]).stdout, /偏薄的类型/, '1 张少于默认薄线 5')
-  assert.ok(!run(['overview', '--vault', root, '--thin', '1']).stdout.includes('偏薄的类型'), '薄线降到 1 就不该再提示')
+  const data = JSON.parse(run(['overview', '--vault', root, '--thin', '1', '--json']).stdout).data
+  assert.ok(!data.thinFamilies.some((f) => f.类型 === 'S-10 现实见闻'), '薄线降到 1 后已有 1 张的类型不再偏薄')
+  assert.ok(data.thinFamilies.some((f) => f.卡数 === 0), '完全没收过的类型仍需提示')
+})
+
+test('overview 空库也列齐注册类型和四个大类，零卡类型全部是缺口', () => {
+  const root = tmp()
+  run(['init', '--vault', root])
+  const data = JSON.parse(run(['overview', '--vault', root, '--json']).stdout).data
+  const registry = readFileSync(join(base, 'skills/material-vault/references/类型注册表.md'), 'utf8')
+  const families = [...registry.matchAll(/^\| (S-\d+) \| [^·|]+·([^|]+) \|/gm)].map((m) => `${m[1]} ${m[2].trim()}`)
+  assert.deepEqual(data.byFamily.map((f) => f.类型), families)
+  assert.equal(data.byBucket.length, 4)
+  assert.ok(data.byBucket.every((b) => b.卡数 === 0))
+  assert.equal(data.thinFamilies.length, families.length)
+  assert.ok(data.thinFamilies.every((f) => f.卡数 === 0))
 })
 
 test('overview 是只读的：跑完索引不变', () => {

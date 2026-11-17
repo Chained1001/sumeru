@@ -420,8 +420,12 @@ export function vaultOverview(root, { thin = THIN_THRESHOLD, now = new Date() } 
 
   // 各类型卡数。按注册表顺序排，不按卡数排：类型号是稳定的参照，
   // 每次看都是同一顺序，才看得出哪一个类型在长、哪一个类型停了。
-  const byFamily = new Map()
-  const byBucket = new Map()
+  // 从唯一事实源补齐零卡类型，否则最缺素材的类型反而不会出现在薄库提示里。
+  const registry = readFileSync(new URL('../references/类型注册表.md', import.meta.url), 'utf8')
+  const families = [...registry.matchAll(/^\| (S-\d+) \| [^·|]+·([^|]+) \|/gm)]
+    .map((m) => `${m[1]} ${m[2].trim()}`)
+  const byFamily = new Map(families.map((family) => [family, 0]))
+  const byBucket = new Map(BUCKETS.map((bucket) => [bucket, 0]))
   for (const { basic } of cards) {
     const fam = String(basic.类型 ?? '').trim() || '（未填）'
     const bucket = String(basic.大类 ?? '').trim() || '（未填）'
@@ -1105,7 +1109,13 @@ function rebuildIndex(root, { dryRun = false } = {}) {
   const rows = []
   const skipped = []
   for (const rel of listCards(root)) {
-    const card = readCard(join(root, rel))
+    let card
+    try {
+      card = readCard(join(root, rel))
+    } catch (error) {
+      skipped.push({ rel, issues: [`读不了卡，请检查文件权限后重试（${error.code ?? 'E_IO'}）`] })
+      continue
+    }
     const issues = checkBasic(card.basic)
     if (issues.length) {
       skipped.push({ rel, issues })
@@ -1113,7 +1123,11 @@ function rebuildIndex(root, { dryRun = false } = {}) {
     }
     rows.push(indexRow(card, rel))
   }
-  if (!dryRun) writeIndex(root, rows)
+  if (!dryRun) {
+    const sorted = [...rows].sort((a, b) => a.相对路径 < b.相对路径 ? -1 : a.相对路径 > b.相对路径 ? 1 : 0)
+    const file = join(root, 'INDEX.md')
+    if (!existsSync(file) || readFileSync(file, 'utf8') !== renderIndex(sorted)) writeIndex(root, rows)
+  }
   return { rows, skipped, dryRun }
 }
 
@@ -1353,84 +1367,107 @@ export function upgradeVault(root, { dryRun = false } = {}) {
   const from = meta.version ?? 0
   const changed = []
   const pending = []
+  const failures = []
 
   for (const rel of listCards(root)) {
-    const file = join(root, rel)
-    const card = readCard(file)
-    const before = readFileSync(file, 'utf8')
+    try {
+      const file = join(root, rel)
+      const card = readCard(file)
+      const before = readFileSync(file, 'utf8')
 
-    const basic = { ...card.basic }
-    const filled = []
+      const basic = { ...card.basic }
+      const filled = []
 
-    // 0.11.0 给三个字段改了名。这一步必须在「补必填」与「退役字段」之前：
-    // 否则旧名会被当成「契约里已没有的字段」挪进「历史字段」——值还在，
-    // 但它不再是真字段，卡上所有必填校验都会说缺。
-    for (const [旧名, 新名] of Object.entries(RENAMED_FIELDS)) {
-      if (basic[旧名] === undefined) continue
-      if (basic[新名] === undefined) basic[新名] = basic[旧名]
-      delete basic[旧名]
-      filled.push(`${旧名}→${新名}`)
-    }
-    for (const f of FIELDS) {
-      if (basic[f.名] !== undefined && basic[f.名] !== '') continue
-      if (f.名 === '私有') {
-        // 私有有默认值可算，不必记「待补」。
-        basic.私有 = defaultPrivate(basic.类型)
-        filled.push(`私有=${basic.私有}`)
-      } else if (f.必填) {
-        // 必填但机器猜不出来的，填「待补」并让用户知道要回来补什么。
-        basic[f.名] = '待补'
-        filled.push(`${f.名}=待补`)
-        pending.push({ rel, field: f.名 })
+      // 0.11.0 给三个字段改了名。这一步必须在「补必填」与「退役字段」之前：
+      // 否则旧名会被当成「契约里已没有的字段」挪进「历史字段」——值还在，
+      // 但它不再是真字段，卡上所有必填校验都会说缺。
+      for (const [旧名, 新名] of Object.entries(RENAMED_FIELDS)) {
+        if (basic[旧名] === undefined) continue
+        if (basic[新名] === undefined) basic[新名] = basic[旧名]
+        delete basic[旧名]
+        filled.push(`${旧名}→${新名}`)
       }
-    }
+      for (const f of FIELDS) {
+        if (basic[f.名] !== undefined && basic[f.名] !== '') continue
+        if (f.名 === '私有') {
+          // 私有有默认值可算，不必记「待补」。
+          basic.私有 = defaultPrivate(basic.类型)
+          filled.push(`私有=${basic.私有}`)
+        } else if (f.必填) {
+          // 必填但机器猜不出来的，填「待补」并让用户知道要回来补什么。
+          basic[f.名] = '待补'
+          filled.push(`${f.名}=待补`)
+        }
+      }
+      // 待补是库的当前状态，不只是本轮动作；重跑仍须提醒用户，不能误报完成。
+      for (const f of FIELDS) {
+        if (f.必填 && basic[f.名] === '待补') pending.push({ rel, field: f.名 })
+      }
+      // 待补由上面的清单单列；其余非法值不能被升级成功掩盖。
+      const validation = checkBasic(Object.fromEntries(Object.entries(basic).map(([key, value]) => [key, value === '待补' ? '' : value])))
+        .filter((message) => !pending.some((p) => p.rel === rel && message === `缺必填字段「${p.field}」`))
+      if (validation.length) {
+        failures.push({ rel, issues: validation })
+        continue
+      }
 
-    // 契约里已没有的字段挪进「历史字段」，值留着：删字段不等于删数据。
-    const known = new Set(FIELD_NAMES)
-    const retired = Object.keys(basic).filter((k) => !known.has(k) && k !== '历史字段')
-    if (retired.length) {
-      const old = retired.map((k) => `${k}=${basic[k]}`).join('，')
-      basic.历史字段 = basic.历史字段 ? `${basic.历史字段}，${old}` : old
-      for (const k of retired) delete basic[k]
-      filled.push(`历史字段+${retired.join('、')}`)
-    }
+      // 契约里已没有的字段挪进「历史字段」，值留着：删字段不等于删数据。
+      const known = new Set(FIELD_NAMES)
+      const retired = Object.keys(basic).filter((k) => !known.has(k) && k !== '历史字段')
+      if (retired.length) {
+        const old = retired.map((k) => `${k}=${basic[k]}`).join('，')
+        basic.历史字段 = basic.历史字段 ? `${basic.历史字段}，${old}` : old
+        for (const k of retired) delete basic[k]
+        filled.push(`历史字段+${retired.join('、')}`)
+      }
 
-    // 正文改名：0.14.0 起「内容」与「借鉴意图」退场，换成「为什么管用」。
-    // 老卡上的值不能静默丢——挪进「历史正文」，人还能看见自己当初写了什么。
-    // 注意它与「历史字段」是两回事：一个管基本信息，一个管正文。
-    const body = { ...card.body }
-    const retiredBody = []
-    for (const k of ['内容', '借鉴意图']) {
-      if (body[k] === undefined) continue
-      const val = String(body[k]).trim()
-      if (val) retiredBody.push(`${k}=${val}`)
-      delete body[k]
-    }
-    if (retiredBody.length) {
-      body.历史正文 = body.历史正文 ? `${body.历史正文}；${retiredBody.join('；')}` : retiredBody.join('；')
-      filled.push('正文→历史正文')
-    }
+      // 正文改名：0.14.0 起「内容」与「借鉴意图」退场，换成「为什么管用」。
+      // 老卡上的值不能静默丢——挪进「历史正文」，人还能看见自己当初写了什么。
+      // 注意它与「历史字段」是两回事：一个管基本信息，一个管正文。
+      const body = { ...card.body }
+      const retiredBody = []
+      for (const k of ['内容', '借鉴意图']) {
+        if (body[k] === undefined) continue
+        const val = String(body[k]).trim()
+        if (val) retiredBody.push(`${k}=${val}`)
+        delete body[k]
+      }
+      if (retiredBody.length) {
+        body.历史正文 = body.历史正文 ? `${body.历史正文}；${retiredBody.join('；')}` : retiredBody.join('；')
+        filled.push('正文→历史正文')
+      }
 
-    if (filled.length === 0) continue
+      if (filled.length === 0) continue
 
-    const next = { basic, dimension: card.dimension, body }
-    const after = renderCard(next)
-    // 内容相同就不写：字段可能被补成它本来就等价的空值，那种情况不该刷新 mtime。
-    if (after === before) continue
+      const next = { basic, dimension: card.dimension, body }
+      const after = renderCard(next)
+      // 内容相同就不写：字段可能被补成它本来就等价的空值，那种情况不该刷新 mtime。
+      if (after === before) continue
 
-    changed.push({ rel, filled })
-    if (!dryRun) {
-      writeAtomic(file, after)
-      upsertIndex(root, indexRow(next, rel))
+      if (!dryRun) {
+        writeAtomic(file, after)
+        upsertIndex(root, indexRow(next, rel))
+      }
+      changed.push({ rel, filled })
+    } catch (error) {
+      failures.push({ rel, issues: [`升级失败，请检查文件及目录的读写权限后重试（${error.code ?? 'E_IO'}）`] })
     }
   }
 
   const needVersion = from !== SCHEMA_VERSION
-  if (!dryRun && (changed.length || needVersion)) {
-    writeAtomic(join(root, 'VAULT.md'), renderMeta(meta.intro ?? '灵感素材库'))
-    if (changed.length) rebuildIndex(root)
+  if (!dryRun) {
+    try {
+      const rebuilt = rebuildIndex(root)
+      for (const skipped of rebuilt.skipped) {
+        if (!failures.some((f) => f.rel === skipped.rel) && !pending.some((p) => p.rel === skipped.rel)) failures.push(skipped)
+      }
+      // 卡或索引失败时保留旧版本，下次修复后仍能重新完成升级。
+      if (failures.length === 0 && needVersion) writeAtomic(join(root, 'VAULT.md'), renderMeta(meta.intro ?? '灵感素材库'))
+    } catch (error) {
+      failures.push({ rel: 'INDEX.md / VAULT.md', issues: [`升级收尾失败，请检查索引与身份证的读写权限后重试（${error.code ?? 'E_IO'}）`] })
+    }
   }
-  return { ok: pending.length === 0, from, to: SCHEMA_VERSION, changed, pending, dryRun, needVersion }
+  return { ok: pending.length === 0 && failures.length === 0, from, to: SCHEMA_VERSION, changed, pending, failures, dryRun, needVersion }
 }
 
 // 身份证正文只有两行有用信息，重构一份比字符串替换稳。
@@ -1708,14 +1745,17 @@ export function runCli(argv, io = {}) {
         : `没有要升级的卡（版本 ${result.from}）`
     const list = result.changed.map((c) => `- ${c.rel}：${c.filled.join('；')}`).join('\n')
     const pending = result.pending.length
-      ? `\n\n以下字段机器补不出，已填「待补」，请回来补：\n${result.pending.map((p) => `- ${p.rel}：${p.field}`).join('\n')}`
+      ? `\n\n以下字段仍待补全${result.dryRun ? '（空跑未写入占位值）' : ''}，请回来补：\n${result.pending.map((p) => `- ${p.rel}：${p.field}=待补`).join('\n')}`
+      : ''
+    const failures = result.failures.length
+      ? `\n\n以下卡或库文件升级失败，请修复后重跑：\n${result.failures.map((f) => `- ${f.rel}：${f.issues.join('；')}`).join('\n')}`
       : ''
     emit(
-      { ok: result.pending.length === 0, errors: result.pending.map((p) => ({ file: p.rel, message: `${p.field}=待补` })), data: { from: result.from, to: result.to, changed: result.changed.length, dryRun: result.dryRun } },
-      [head, list].filter(Boolean).join('\n') + pending,
+      { ok: result.ok, errors: [...result.pending.map((p) => ({ file: p.rel, message: `${p.field}=待补` })), ...result.failures.flatMap((f) => f.issues.map((message) => ({ file: f.rel, message })))], data: { from: result.from, to: result.to, changed: result.changed.length, dryRun: result.dryRun, pending: result.pending, failures: result.failures } },
+      [head, list].filter(Boolean).join('\n') + pending + failures,
     )
     // 有待补字段时退出码 1：升级完成了，但库还没干净，不能让调用方以为全好了。
-    return result.pending.length ? 1 : 0
+    return result.ok ? 0 : 1
   }
 
   if (options.cmd === 'collect' && options.action === 'mark') {
